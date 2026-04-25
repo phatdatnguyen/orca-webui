@@ -1,0 +1,17 @@
+flagged/
+orca-env/
+data/
+static/
+__pycache__/
+.vs/
+
+*.inp
+*.out
+*.log
+*.csv
+*.xyz
+*.pdb
+*.mol
+*.mol2
+*.html
+*.cube
