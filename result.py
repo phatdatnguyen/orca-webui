@@ -6,14 +6,20 @@ import matplotlib.pyplot as plt
 from matplotlib.ticker import ScalarFormatter
 import gradio as gr
 import cclib
-import nglview
-from utils import get_files_in_working_directory, mol_from_orca_file, generate_ir_spectrum_interactive, generate_absorption_emission_spectrum_interactive, parse_nmr_shielding_constants, calculate_chemical_shifts, generate_nmr_spectrum_interactive
+from utils import get_files_in_working_directory, generate_ir_spectrum_interactive, generate_absorption_emission_spectrum_interactive, parse_nmr_shielding_constants, parse_nmr_jcouplings, calculate_chemical_shifts, generate_nmr_spectrum_interactive, compute_hydrogen_equivalence, compute_carbon_equivalence, build_nmr_peak_table, multiplicity_label, parse_orca_geometry
 
 def on_working_directory_file_list_change(working_directory_file_list):
     output_file_names = [f for f in working_directory_file_list if f.endswith('.log') ]
     return gr.update(choices=output_file_names, value=output_file_names[0] if len(output_file_names) > 0 else None, interactive=True)
 
-def on_load_result_file(working_directory_path, calculation_result_file_name):
+def _parse_reference(value, default):
+    """Parse a reference-shielding textbox value to float, falling back on blanks/errors."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+def on_load_result_file(working_directory_path, calculation_result_file_name, h_reference="32.9", c_reference="203.4", show_equivalent=True):
     try:
         calculation_result_file_path = os.path.join(working_directory_path, calculation_result_file_name)
         parser = cclib.io.ccopen(calculation_result_file_path)
@@ -98,12 +104,33 @@ def on_load_result_file(working_directory_path, calculation_result_file_name):
         if show_nmr:
             # Get results
             shielding_data = parse_nmr_shielding_constants(calculation_result_file_path)
+            jcoupling_data = parse_nmr_jcouplings(calculation_result_file_path)
             reference_shieldings = {
-                'H': 31.5,
-                'C': 186.0
-            }       
+                'H': _parse_reference(h_reference, 32.9),
+                'C': _parse_reference(c_reference, 203.4)
+            }
 
             shifts_data = calculate_chemical_shifts(shielding_data, reference_shieldings)
+
+            # Determine which hydrogens are chemically equivalent (bonded to the
+            # same heavy atom) so their signals average into one peak. Geometry is
+            # read from the log (same atom order as the NMR nuclei; cclib reorders
+            # atoms). Falls back to shift-based grouping if geometry is missing.
+            h_equivalence = None
+            c_equivalence = None
+            try:
+                geom_symbols, geom_coords = parse_orca_geometry(calculation_result_file_path)
+                if geom_symbols:
+                    h_equivalence = compute_hydrogen_equivalence(geom_coords, geom_symbols)
+                    c_equivalence = compute_carbon_equivalence(geom_coords, geom_symbols)
+            except Exception as eq_exc:
+                print(f"Could not compute atom equivalence: {eq_exc}")
+
+            # When the user opts out of averaging, map every atom to its own group so
+            # no nuclei merge; the plot still shows individual (J-split) peaks.
+            identity_equiv = {atom_idx: atom_idx for atom_idx, _, _ in shifts_data}
+            h_equiv_arg = h_equivalence if show_equivalent else identity_equiv
+            c_equiv_arg = c_equivalence if show_equivalent else identity_equiv
 
             # Create the DataFrame
             atom_indices = []
@@ -134,27 +161,65 @@ def on_load_result_file(working_directory_path, calculation_result_file_name):
                 'Chemical Shift (ppm, ref: TMS)': chemical_shifts
             })
 
-            # Generate 1H NMR spectrum
+            # Generate 1H NMR spectrum (equivalent H averaged into single peaks).
+            # Narrow linewidth + dense sampling so J-coupling multiplets resolve.
             nmr_spectrum_1H = generate_nmr_spectrum_interactive(
                 shifts_data,
                 element_symbol='H',
-                linewidth=1,           # Line width in Hz
+                linewidth=0.4,         # Line width in Hz (~0.8 Hz FWHM at 500 MHz)
+                points=40000,          # dense enough to render the narrow lines
                 frequency=500,         # 500 MHz spectrometer
-                plot_range=(-2, 13)    # Plot from 0 to 10 ppm
+                plot_range=(-2, 13),   # Plot from 0 to 10 ppm
+                jcouplings=jcoupling_data,
+                equivalence=h_equiv_arg
             )
 
-            # Generate 13C NMR spectrum
+            # Generate 13C NMR spectrum (proton-decoupled: shown as singlets,
+            # so no J-coupling splitting is applied). Equivalent carbons average.
             nmr_spectrum_13C = generate_nmr_spectrum_interactive(
                 shifts_data,
                 element_symbol='C',
                 linewidth=1,           # Line width in Hz
                 frequency=500,         # 500 MHz spectrometer
-                plot_range=(-25, 225)  # Plot from 0 to 200 ppm
+                plot_range=(-25, 225), # Plot from 0 to 200 ppm
+                jcouplings=None,
+                equivalence=c_equiv_arg
             )
+
+            # Build the averaged 1H signal table (one row per averaged peak)
+            h_peaks = build_nmr_peak_table(
+                shifts_data, 'H', jcouplings=jcoupling_data, equivalence=h_equiv_arg
+            )
+            nmr_multiplet_df = pd.DataFrame({
+                'Atoms (H)': [", ".join(str(i) for i in p['atom_idxs']) for p in h_peaks],
+                '# H': [p['count'] for p in h_peaks],
+                'Chemical Shift (ppm)': ['{:.3f}'.format(p['shift']) for p in h_peaks],
+                'Multiplicity': [multiplicity_label(p['couplings']) for p in h_peaks],
+                'J (Hz)': [
+                    ", ".join('{:.2f}'.format(c['J']) for c in p['couplings']) if p['couplings'] else ""
+                    for p in h_peaks
+                ],
+            })
+
+            # Build the averaged 13C signal table (proton-decoupled singlets)
+            c_peaks = build_nmr_peak_table(
+                shifts_data, 'C', jcouplings=None, equivalence=c_equiv_arg
+            )
+            nmr_multiplet_13C_df = pd.DataFrame({
+                'Atoms (C)': [", ".join(str(i) for i in p['atom_idxs']) for p in c_peaks],
+                '# C': [p['count'] for p in c_peaks],
+                'Chemical Shift (ppm)': ['{:.3f}'.format(p['shift']) for p in c_peaks],
+            })
         else:
             nmr_df = None
+            nmr_multiplet_df = None
+            nmr_multiplet_13C_df = None
             nmr_spectrum_1H = None
             nmr_spectrum_13C = None
+
+        # Averaged tables are only meaningful when equivalent atoms are merged;
+        # hide them (keeping the per-atom "NMR signals" table and both spectra) when off.
+        show_averaged_tables = show_nmr and show_equivalent
 
         status = f"Result file loaded."
         return f"<span style='color:green;'>{status}</span>", data, \
@@ -162,7 +227,7 @@ def on_load_result_file(working_directory_path, calculation_result_file_name):
                gr.update(visible=show_geometry_optimization), energy_plot, \
                gr.update(visible=show_frequency), ir_df, ir_spectrum, thero_df, gr.update(interactive=show_frequency), \
                gr.update(visible=show_absorption_emission), None, None, gr.update(interactive=show_absorption_emission), \
-               gr.update(visible=show_nmr), nmr_df, nmr_spectrum_1H, nmr_spectrum_13C, gr.update(interactive=show_nmr)
+               gr.update(visible=show_nmr), nmr_df, gr.update(value=nmr_multiplet_df, visible=show_averaged_tables), nmr_spectrum_1H, nmr_spectrum_13C, gr.update(value=nmr_multiplet_13C_df, visible=show_averaged_tables), gr.update(interactive=show_nmr)
     except Exception as exc:
         status = f"Error loading result file: {exc}"
         return f"<span style='color:red;'>{status}</span>", None, \
@@ -170,7 +235,7 @@ def on_load_result_file(working_directory_path, calculation_result_file_name):
                gr.update(visible=False), None, \
                gr.update(visible=False), None, None, None, gr.update(interactive=False), \
                gr.update(visible=False), None, None, gr.update(interactive=False), \
-               gr.update(visible=False), None, None, None, gr.update(interactive=False)
+               gr.update(visible=False), None, None, None, None, None, gr.update(interactive=False)
 
 def on_show_absorption_spectrum(data):
     if hasattr(data, 'etenergies') and hasattr(data, 'etoscs'):
@@ -300,19 +365,34 @@ def result_tab_content(working_directory_path_state, working_directory_file_list
                     nmr_filename_textbox = gr.Textbox(label="File name", value="nmr_data")
                     export_nmr_button = gr.Button(value="Export", interactive=False)
                 with gr.Column(scale=2):
-                    with gr.Row():    
+                    with gr.Row():
+                        show_equivalent_checkbox = gr.Checkbox(label="Show equivalent atoms as one peak", value=True)
+                    with gr.Row():
+                        h_reference_textbox = gr.Textbox(label="1H reference shielding (ppm, e.g. TMS)", value="32.9")
+                        c_reference_textbox = gr.Textbox(label="13C reference shielding (ppm, e.g. TMS)", value="203.4")
+                        refresh_nmr_button = gr.Button(value="Refresh")
+                    with gr.Row():
                         nmr_spectrum_1H = gr.Plot(label="1H NMR spectrum")
                     with gr.Row():
+                        nmr_multiplet_dataframe = gr.DataFrame(label="Averaged 1H signals")
+                    with gr.Row():
                         nmr_spectrum_13C = gr.Plot(label="13C NMR spectrum")
+                    with gr.Row():
+                        nmr_multiplet_13C_dataframe = gr.DataFrame(label="Averaged 13C signals")
     
     working_directory_file_list_state.change(on_working_directory_file_list_change, working_directory_file_list_state, calculation_result_file_dropdown)
-    load_button.click(on_load_result_file, [working_directory_path_state, calculation_result_file_dropdown],
-                                           [status_markdown, data_state,
-                                            energy_result_accordion, energy_texbox, dipole_moment_texbox, mo_dataframe,
-                                            opt_result_accordion, energy_plot,
-                                            frequency_result_accordion, ir_dataframe, ir_spectrum_plot, thermo_dataframe, export_ir_button,
-                                            absorption_emission_result_accordion, peak_dataframe, absorption_emisson_spectrum_plot, export_peak_button,
-                                            nmr_result_accordion, nmr_dataframe, nmr_spectrum_1H, nmr_spectrum_13C, export_nmr_button])
+    nmr_result_outputs = [status_markdown, data_state,
+                          energy_result_accordion, energy_texbox, dipole_moment_texbox, mo_dataframe,
+                          opt_result_accordion, energy_plot,
+                          frequency_result_accordion, ir_dataframe, ir_spectrum_plot, thermo_dataframe, export_ir_button,
+                          absorption_emission_result_accordion, peak_dataframe, absorption_emisson_spectrum_plot, export_peak_button,
+                          nmr_result_accordion, nmr_dataframe, nmr_multiplet_dataframe, nmr_spectrum_1H, nmr_spectrum_13C, nmr_multiplet_13C_dataframe, export_nmr_button]
+    load_button.click(on_load_result_file,
+                      [working_directory_path_state, calculation_result_file_dropdown, h_reference_textbox, c_reference_textbox, show_equivalent_checkbox],
+                      nmr_result_outputs)
+    refresh_nmr_button.click(on_load_result_file,
+                             [working_directory_path_state, calculation_result_file_dropdown, h_reference_textbox, c_reference_textbox, show_equivalent_checkbox],
+                             nmr_result_outputs)
     export_ir_button.click(on_export_data, [working_directory_path_state, ir_filename_textbox, ir_dataframe], [status_markdown, working_directory_file_list_state])
     absorption_spectrum_button.click(on_show_absorption_spectrum, data_state, [peak_dataframe, absorption_emisson_spectrum_plot])
     export_peak_button.click(on_export_data, [working_directory_path_state, peak_filename_textbox, peak_dataframe], [status_markdown, working_directory_file_list_state])
