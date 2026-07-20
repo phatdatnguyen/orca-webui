@@ -15,12 +15,12 @@ This web UI is for simple computational chemistry calculations with [Orca](https
   <img src="./images/webui_1.png" alt="Description 1" style="width: 100%;" />
 </p>
 <p style="display: flex; justify-content: space-between; gap: 10px;">
-  <img src="./images/webui_2.png" alt="Description 1" style="width: 50%;" />
-  <img src="./images/webui_3.png" alt="Description 2" style="width: 50%;" />
+  <img src="./images/webui_2.png" alt="Description 1" style="width: 49%;" />
+  <img src="./images/webui_3.png" alt="Description 2" style="width: 49%;" />
 </p>
 <p style="display: flex; justify-content: space-between; gap: 10px;">
-  <img src="./images/webui_4.png" alt="Description 1" style="width: 60%;" />
-  <img src="./images/webui_5.png" alt="Description 2" style="width: 40%;" />
+  <img src="./images/webui_4.png" alt="Description 1" style="width: 59%;" />
+  <img src="./images/webui_5.png" alt="Description 2" style="width: 39%;" />
 </p>
 
 > **Note:** This web UI drives the external [ORCA](https://www.faccts.de/orca/)
