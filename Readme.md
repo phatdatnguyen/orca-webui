@@ -1,5 +1,7 @@
+![Workflow](./images/workflow.png)
+
 ## Introduction
-This web UI is for simple computational chemistry calculations with [Orca](https://www.faccts.de/orca/):
+This web UI is for simple computational chemistry calculations with [ORCA](https://www.faccts.de/orca/):
 
 * Single-Point Calculation
 
