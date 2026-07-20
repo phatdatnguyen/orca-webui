@@ -12,6 +12,7 @@ dist/
 .eggs/
 .pytest_cache/
 
+*.txt
 *.inp
 *.out
 *.log
