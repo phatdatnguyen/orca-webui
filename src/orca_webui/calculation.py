@@ -207,7 +207,7 @@ def calculation_tab_content(working_directory_path_state, working_directory_file
     with gr.Tab("Calculation") as calculation_tab:
         with gr.Accordion("Settings", open=False):
             with gr.Row():
-                n_cores_slider = gr.Slider(label="Number of cores", value=1, minimum=1, maximum=1, step=1, interactive=False)
+                n_cores_slider = gr.Slider(label="Number of cores", value=1, minimum=1, maximum=32, step=1, interactive=False)
                 memory_slider = gr.Slider(label="Memory (GB)", value=max_memory, minimum=1, maximum=max_memory, step=1)
         with gr.Accordion("Generate Input File"):
             with gr.Row():

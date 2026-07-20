@@ -167,7 +167,12 @@ def on_view_structure_file(working_directory_path, file_name):
             mol = add_bonds(mol_from_orca_file(file_path))
 
         Chem.SanitizeMol(mol)
-        AllChem.EmbedMolecule(mol)
+        # Display the file's REAL coordinates. Only embed a fresh conformer if the file
+        # somehow carried none — re-embedding otherwise would discard the parsed (e.g.
+        # ORCA-optimized) geometry and, because add_bonds perceives every bond as single,
+        # pucker planar/aromatic systems into a bogus sp3-looking shape.
+        if mol.GetNumConformers() == 0:
+            AllChem.EmbedMolecule(mol)
 
         # Create the NGL view widget
         view = nglview.show_rdkit(mol)

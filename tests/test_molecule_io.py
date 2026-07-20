@@ -83,6 +83,30 @@ def test_add_bonds_infers_connectivity():
     assert bonded.GetNumBonds() == 5
 
 
+def test_add_bonds_preserves_conformer_geometry():
+    """add_bonds must keep the input geometry (exactly one conformer, same coords).
+
+    Regression guard: the structure viewer only re-embeds when GetNumConformers()==0,
+    so a parsed file keeps its REAL coordinates. If add_bonds dropped the conformer,
+    the viewer would fall back to a fresh (all-single-bond) embedding that puckers
+    planar/aromatic systems into a bogus sp3-looking geometry.
+    """
+    mol = Chem.AddHs(Chem.MolFromSmiles("c1ccccc1"))  # benzene: planar
+    assert AllChem.EmbedMolecule(mol, randomSeed=11) == 0
+
+    rw = Chem.RWMol()
+    for atom in mol.GetAtoms():
+        rw.AddAtom(Chem.Atom(atom.GetAtomicNum()))
+    rw.AddConformer(mol.GetConformer(), assignId=True)
+    bonded = utils.add_bonds(rw.GetMol())
+
+    assert bonded.GetNumConformers() == 1  # geometry retained, viewer won't re-embed
+    src, dst = mol.GetConformer(), bonded.GetConformer()
+    for i in range(mol.GetNumAtoms()):
+        a, b = src.GetAtomPosition(i), dst.GetAtomPosition(i)
+        assert abs(a.x - b.x) < 1e-6 and abs(a.y - b.y) < 1e-6 and abs(a.z - b.z) < 1e-6
+
+
 # --- mol_from_orca_file (requires cclib) ------------------------------------
 
 def test_mol_from_orca_file_requires_cclib_only_when_called():
