@@ -5,6 +5,13 @@ static/
 __pycache__/
 .vs/
 
+# Python packaging / build artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+.pytest_cache/
+
 *.inp
 *.out
 *.log

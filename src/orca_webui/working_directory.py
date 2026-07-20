@@ -1,3 +1,11 @@
+"""Working-directory column: directory selection, file browser, and file viewers.
+
+Owns the left-hand column of the UI. A "working directory" is a subfolder under
+``data/`` in which all structure files, ORCA inputs/outputs, and exports live. This
+module also holds the two shared ``gr.State`` objects (current path and file list)
+that the other tabs subscribe to; any handler that changes files on disk returns a
+fresh file list into that state so every tab's dropdowns stay in sync.
+"""
 import os
 import shutil
 import time
@@ -6,13 +14,20 @@ import gradio as gr
 from rdkit import Chem
 from rdkit.Chem import AllChem
 import nglview
-from utils import get_files_in_working_directory, mol_from_xyz_file, mol_from_orca_file, add_bonds
+from .utils import get_files_in_working_directory, mol_from_xyz_file, mol_from_orca_file, add_bonds
 
-def get_working_directories():
+def get_working_directories() -> list[str]:
+    """List the existing working-directory names (immediate subfolders of ``data/``)."""
     base_path = "./data/"
     return [d for d in os.listdir(base_path) if os.path.isdir(os.path.join(base_path, d))]
 
 def on_open_working_directory(working_directory):
+    """Create (if needed) and open ``working_directory`` under ``data/``.
+
+    Returns updates for the directory dropdown, the path/file-list states, and the
+    two buttons that become interactive once a directory is open. Warns and no-ops
+    when the name is blank.
+    """
     if working_directory is None or working_directory.strip() == "":
         gr.Warning("Please specify a working directory.")
         return gr.update(), None, None, gr.update(), gr.update()
@@ -23,9 +38,14 @@ def on_open_working_directory(working_directory):
     
     return gr.update(choices=get_working_directories(), value=working_directory), working_directory_path, files, gr.update(interactive=True), gr.update(interactive=True)
 
-def on_file_list_change(working_directory_path):
+def on_file_list_change(working_directory_path) -> pd.DataFrame:
+    """Build the file-browser DataFrame (File / Type / Modified) for the directory.
+
+    Each file is classified by extension into a human-readable type, and rows are
+    ordered by actual modification time (newest first).
+    """
     files = get_files_in_working_directory(working_directory_path)
-    
+
     # Update the file dataframe
     file_info = []
     for f in files:
@@ -51,14 +71,23 @@ def on_file_list_change(working_directory_path):
             file_type = "Other File"
         
         file_path = os.path.join(working_directory_path, f)
-        modified_time = time.ctime(os.path.getmtime(file_path))
-        file_info.append([f, file_type, modified_time])
-        file_info.sort(key=lambda x: x[2].lower(), reverse=True) # Sort by modified time descending
+        mtime = os.path.getmtime(file_path)
+        file_info.append([f, file_type, mtime])
+    # Sort by the numeric modification time (newest first), then format for display.
+    # Sorting the ctime *string* would order by weekday name, not chronologically.
+    file_info.sort(key=lambda x: x[2], reverse=True)
+    file_info = [[f, file_type, time.ctime(mtime)] for f, file_type, mtime in file_info]
     file_df = pd.DataFrame(file_info, columns=["File", "Type", "Modified"])
 
     return file_df
 
 def on_select_file(evt: gr.SelectData):
+    """Handle a row click in the file browser.
+
+    Returns the selected file name plus two derived selections (a viewable structure
+    file and a viewable text file, each ``None`` when the type doesn't apply) and
+    enables the delete button. These drive which viewer buttons become active.
+    """
     selected_file_name = evt.row_value[0]
     if selected_file_name.endswith('.xyz') or selected_file_name.endswith('.pdb') or selected_file_name.endswith('.mol') or selected_file_name.endswith('.mol2') or selected_file_name.endswith('.log'):
         selected_structure_file = selected_file_name
@@ -72,16 +101,20 @@ def on_select_file(evt: gr.SelectData):
     return selected_file_name, selected_structure_file, selected_text_file, gr.update(interactive=True)
 
 def on_selected_structure_file_state_change(state):
+    """Enable the "View Structure File" button only when a structure file is selected."""
     return gr.update(interactive=(state is not None))
 
 def on_selected_text_file_state_change(state):
+    """Enable the "View Text File" button only when a text-viewable file is selected."""
     return gr.update(interactive=(state is not None))
 
 def on_upload_file(working_directory_path, file_path):
+    """Copy an uploaded file into the working directory; return the refreshed file list."""
     shutil.copy2(file_path, os.path.join(working_directory_path, os.path.basename(file_path)))
     return get_files_in_working_directory(working_directory_path)
 
 def on_delete_file(working_directory_path, selected_file_name):
+    """Delete the selected file; return the refreshed file list (warns on error)."""
     if selected_file_name is None:
         return get_files_in_working_directory(working_directory_path)
     
@@ -96,6 +129,10 @@ def on_delete_file(working_directory_path, selected_file_name):
     return get_files_in_working_directory(working_directory_path)
 
 def on_clean_working_directory(working_directory_path):
+    """Remove scratch/leftover files (ORCA temp, ``.bibtex``, ``Zone.Identifier``, etc.).
+
+    Returns the refreshed file list; warns on error.
+    """
     try:
         files_to_clean = [f for f in os.listdir(working_directory_path) if f.startswith('#') or f.endswith(".tmp") or f.endswith(".bibtex") or f.endswith("Zone.Identifier") or ".tmp." in f]
         for f in files_to_clean:
@@ -110,6 +147,12 @@ def on_clean_working_directory(working_directory_path):
     return get_files_in_working_directory(working_directory_path)
 
 def on_view_structure_file(working_directory_path, file_name):
+    """Render a 3D viewer for the selected structure/output file.
+
+    Loads the geometry (XYZ/PDB/MOL/MOL2, or an ORCA ``.log`` via cclib), builds an
+    nglview widget, writes it to ``static/structure.html``, and returns an ``<iframe>``
+    (cache-busted with a timestamp) pointing at it. Returns ``None`` and warns on error.
+    """
     try:
         file_path = os.path.join(working_directory_path, file_name)
         if file_name.endswith('.pdb'):
@@ -144,6 +187,11 @@ def on_view_structure_file(working_directory_path, file_name):
         return None
 
 def on_view_text_file(working_directory_path, text_file_name):
+    """Load a text-viewable file into the editable text viewer.
+
+    Returns updates for the text area (label + content, made editable) and the save
+    button. Warns and no-ops on read error.
+    """
     text_file_path = os.path.join(working_directory_path, text_file_name)
     try:
         with open(text_file_path, 'r') as file:
@@ -154,6 +202,10 @@ def on_view_text_file(working_directory_path, text_file_name):
         return gr.update(), gr.update()
 
 def on_save_text_file(working_directory_path, text_file_name, text_content):
+    """Write the text-viewer contents back to the selected file.
+
+    Returns the refreshed file list; warns if no file is selected or on write error.
+    """
     if text_file_name is None:
         gr.Warning("Please select a text file to save.")
         return get_files_in_working_directory(working_directory_path)
@@ -170,6 +222,12 @@ def on_save_text_file(working_directory_path, text_file_name, text_content):
     return get_files_in_working_directory(working_directory_path)
 
 def working_directory_blocks():
+    """Build the working-directory column and wire its events.
+
+    Returns the two shared ``gr.State`` objects — ``(working_directory_path_state,
+    working_directory_file_list_state)`` — which the calculation and result tabs
+    subscribe to.
+    """
     with gr.Column(scale=1):
         working_directory_dropdown = gr.Dropdown(label="Working Directory", choices=get_working_directories(), value="wd", allow_custom_value=True)
         working_directory_path_state = gr.State()

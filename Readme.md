@@ -12,55 +12,65 @@ This web UI is for simple computational chemistry calculations with [Orca](https
 * NMR Prediction
 
 
+> **Note:** This web UI drives the external [ORCA](https://www.faccts.de/orca/)
+> program but does **not** bundle it. Install ORCA separately (free for academic use)
+> and make sure the `orca` executable is on your `PATH`; only then can calculations be
+> run. Input-file generation and result parsing work without it.
+
 ## Installation
-- Clone this repo: Open terminal
+
+The recommended way to install is the [PyPI package](https://pypi.org/project/orca-webui/) (Python 3.10+).
+
+First create and activate a virtual environment so the dependencies stay isolated from your system Python:
+
+***For Linux and macOS***
 
 ```
-git clone https://github.com/phatdatnguyen/orca-webui
-```
-
-- Create and activate virtual environment:
-
-***For Linux and MacOS***
-
-```
-cd orca-webui
 python3 -m venv orca-env
 source orca-env/bin/activate
 ```
+
 ***For Windows***
 
 ```
-cd orca-webui
 python -m venv orca-env
 orca-env\Scripts\activate.bat
 ```
 
-- Install packages:
+Then install the package from PyPI:
 
 ```
-pip install psutil
-pip install rdkit
-python -m pip install git+https://github.com/cclib/cclib.git
-pip install plotly
-pip install gradio_molecule2d
-pip uninstall gradio
-pip install gradio==5.50.0
-pip install nglview==4.0
+pip install orca-webui
 ```
+
+This pulls in all Python dependencies (Gradio, RDKit, cclib, plotly, nglview, ...).
 
 ## Start web UI
-To start the web UI:
 
-***For Linux and MacOS***
+Run the console command from the directory where you want your `data/` and `static/`
+folders to be created:
 
 ```
-source orca-env/bin/activate
-python3 webui.py
+orca-webui
 ```
 
-***For Windows***
+It starts a local server on the first free port at/after 7860 (open the printed URL in
+your browser).
+
+## Development (from source)
+
 ```
-orca-env\Scripts\activate.bat
-python webui.py
+git clone https://github.com/phatdatnguyen/orca-webui
+cd orca-webui
+
+# create and activate a virtual environment
+python -m venv orca-env
+source orca-env/bin/activate          # Windows: orca-env\Scripts\activate.bat
+
+# install in editable mode with the dev extras (pytest, build, twine)
+pip install -e ".[dev]"
+
+# run the app and the tests
+orca-webui
+pytest
 ```

@@ -1,0 +1,67 @@
+[build-system]
+requires = ["setuptools>=77.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "orca-webui"
+version = "0.1.0"
+description = "A Gradio web UI for simple ORCA computational-chemistry calculations (single point, geometry optimization, frequency/IR, TD-DFT UV-Vis, and NMR)."
+readme = "Readme.md"
+requires-python = ">=3.10"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE.txt"]
+authors = [{ name = "Dat Nguyen" }]
+keywords = [
+    "orca",
+    "computational chemistry",
+    "quantum chemistry",
+    "dft",
+    "nmr",
+    "spectroscopy",
+    "gradio",
+    "chemistry",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Web Environment",
+    "Framework :: FastAPI",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Chemistry",
+]
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "gradio==5.50.0",
+    "gradio_molecule2d",
+    "nglview==4.0",
+    "rdkit",
+    "cclib>=1.8",
+    "numpy",
+    "pandas",
+    "plotly",
+    "matplotlib",
+    "psutil",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "build", "twine"]
+
+[project.urls]
+Homepage = "https://github.com/phatdatnguyen/orca-webui"
+Repository = "https://github.com/phatdatnguyen/orca-webui"
+Issues = "https://github.com/phatdatnguyen/orca-webui/issues"
+
+[project.scripts]
+orca-webui = "orca_webui.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+orca_webui = ["styles.css"]

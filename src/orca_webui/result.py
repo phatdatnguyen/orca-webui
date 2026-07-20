@@ -1,3 +1,10 @@
+"""Result tab: load an ORCA ``.log`` and render whichever results it contains.
+
+A single loader (:func:`on_load_result_file`) parses the output with cclib and
+conditionally reveals accordions — Energy/MOs, Geometry Optimization, Frequency/IR,
+Absorption/Emission (TD-DFT), and NMR — based on what data is present. The NMR path
+also runs the shielding -> chemical-shift -> multiplet pipeline from ``utils``.
+"""
 import os
 import time
 import numpy as np
@@ -6,9 +13,10 @@ import matplotlib.pyplot as plt
 from matplotlib.ticker import ScalarFormatter
 import gradio as gr
 import cclib
-from utils import get_files_in_working_directory, generate_ir_spectrum_interactive, generate_absorption_emission_spectrum_interactive, parse_nmr_shielding_constants, parse_nmr_jcouplings, calculate_chemical_shifts, generate_nmr_spectrum_interactive, compute_hydrogen_equivalence, compute_carbon_equivalence, build_nmr_peak_table, multiplicity_label, parse_orca_geometry
+from .utils import get_files_in_working_directory, generate_ir_spectrum_interactive, generate_absorption_emission_spectrum_interactive, parse_nmr_shielding_constants, parse_nmr_jcouplings, calculate_chemical_shifts, generate_nmr_spectrum_interactive, compute_hydrogen_equivalence, compute_carbon_equivalence, build_nmr_peak_table, multiplicity_label, parse_orca_geometry
 
 def on_working_directory_file_list_change(working_directory_file_list):
+    """Repopulate the result-file dropdown with the ``.log`` files in the directory."""
     output_file_names = [f for f in working_directory_file_list if f.endswith('.log') ]
     return gr.update(choices=output_file_names, value=output_file_names[0] if len(output_file_names) > 0 else None, interactive=True)
 
@@ -20,6 +28,18 @@ def _parse_reference(value, default):
         return default
 
 def on_load_result_file(working_directory_path, calculation_result_file_name, h_reference="32.9", c_reference="203.4", show_equivalent=True):
+    """Load an ORCA result ``.log`` and produce all Result-tab outputs.
+
+    Parses the file with cclib and, for each result category present, builds the
+    corresponding table/plot and a visibility update for its accordion. ``h_reference``
+    / ``c_reference`` are the TMS reference shieldings used to convert NMR shieldings to
+    chemical shifts; ``show_equivalent`` controls whether symmetry-equivalent nuclei are
+    averaged into single peaks.
+
+    Returns a large positional tuple aligned index-for-index with ``nmr_result_outputs``
+    in :func:`result_tab_content` — keep the two in sync when changing either. On error,
+    returns a matching tuple that hides every accordion and reports the error.
+    """
     try:
         calculation_result_file_path = os.path.join(working_directory_path, calculation_result_file_name)
         parser = cclib.io.ccopen(calculation_result_file_path)
@@ -52,7 +72,8 @@ def on_load_result_file(working_directory_path, calculation_result_file_name, h_
             show_enery_result = False
             energy_text = ""
             dipole_moment_text = ""
-        
+            MO_df = None
+
         # Display geometry optimization result
         if hasattr(data, "scfenergies") and len(data.scfenergies) > 1:
             show_geometry_optimization = True
@@ -238,6 +259,12 @@ def on_load_result_file(working_directory_path, calculation_result_file_name, h_
                gr.update(visible=False), None, None, None, None, None, gr.update(interactive=False)
 
 def on_show_absorption_spectrum(data):
+    """Build the absorption peak table + UV-Vis spectrum from a parsed TD-DFT result.
+
+    ``data`` is the cclib object stashed in the data state by :func:`on_load_result_file`.
+    Returns ``(peak_dataframe, spectrum_figure)`` for every excited state, or
+    ``(None, None)`` when the result has no electronic transitions.
+    """
     if hasattr(data, 'etenergies') and hasattr(data, 'etoscs'):
         # etenergies in cm^(-1), etoscs are dimensionless
         energies_wavenumber = np.array(data.etenergies)
@@ -274,6 +301,12 @@ def on_show_absorption_spectrum(data):
         return None, None
 
 def on_show_emission_spectrum(data):
+    """Build the emission peak table + spectrum (Kasha's rule: S1 -> S0 only).
+
+    Uses only the lowest excited state from the parsed TD-DFT result and assigns it a
+    unit oscillator strength. Returns ``(peak_dataframe, spectrum_figure)``, or
+    ``(None, None)`` when the result has no electronic transitions.
+    """
     if hasattr(data, 'etenergies') and hasattr(data, 'etoscs'):
         # etenergies in cm^(-1), etoscs are dimensionless
         energies_wavenumber = np.array(data.etenergies)
@@ -310,6 +343,10 @@ def on_show_emission_spectrum(data):
         return None, None
 
 def on_export_data(working_directory_path, file_name, df):
+    """Export a result DataFrame to ``<file_name>.csv`` in the working directory.
+
+    Returns ``(status_html, file_list)``; errors are reported in the status span.
+    """
     try:
         file_path = os.path.join(working_directory_path, file_name + ".csv")
         df.to_csv(file_path, encoding='utf-8', index=False)
@@ -320,6 +357,12 @@ def on_export_data(working_directory_path, file_name, df):
         return f"<span style='color:red;'>{status}</span>", get_files_in_working_directory(working_directory_path)
 
 def result_tab_content(working_directory_path_state, working_directory_file_list_state, status_markdown):
+    """Build the "Result" tab (all result accordions) and wire its events.
+
+    Takes the shared path/file-list states and status line; returns the tab component.
+    The output list wired to the load/refresh handlers must stay index-aligned with the
+    return tuple of :func:`on_load_result_file`.
+    """
     with gr.Tab("Result") as result_tab:
         with gr.Row():
             with gr.Column(scale=1):

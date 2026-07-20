@@ -1,3 +1,10 @@
+"""Calculation tab: turn a structure file into an ORCA input file and run ORCA.
+
+The upper section builds an ``.inp`` file for the chosen calculation type (single
+point, optimization, frequency, TD-DFT, NMR) and method/basis/solvation settings;
+the lower section invokes the external ``orca`` binary on a selected ``.inp`` and
+captures its stdout to a ``.log``.
+"""
 import os
 import time
 import multiprocessing
@@ -9,11 +16,18 @@ import pandas as pd
 from rdkit import Chem
 from rdkit.Chem import AllChem
 import cclib
-from utils import *
+from .utils import *
 
+# Physical RAM in whole GB, used as the upper bound / default of the memory slider.
 max_memory = math.floor(psutil.virtual_memory().total / (1024 ** 3))
 
 def on_working_directory_file_list_change(working_directory_file_list, input_file_name):
+    """Repopulate the input-structure and input-file dropdowns from the file list.
+
+    Keeps the currently-typed input file name selected if a matching ``.inp`` exists,
+    otherwise falls back to the first available input file. Returns updates for the
+    structure dropdown and the input-file dropdown.
+    """
     structure_file_names = [f for f in working_directory_file_list if f.endswith('.xyz') or f.endswith('.pdb') or f.endswith('.mol') or f.endswith('.mol2') or f.endswith('.log')]
     input_file_names = [f for f in working_directory_file_list if f.endswith('.inp')]
     if input_file_name + ".inp" in input_file_names:
@@ -25,6 +39,12 @@ def on_working_directory_file_list_change(working_directory_file_list, input_fil
            gr.update(choices=input_file_names, value=input_file_name_value, interactive=True)
    
 def on_change_calculation_type(calculation_type):
+    """React to the calculation-type radio changing.
+
+    Suggests a default input file name, restricts the available method types (NMR
+    excludes semi-empirical/CC), swaps the functional list for TD-DFT, and toggles
+    visibility of the TD-DFT sliders and the NMR spin-spin-coupling checkbox.
+    """
     if calculation_type == "Single-Point":
         file_name = "single_point"
     elif calculation_type == "Geometry Optimization":
@@ -53,12 +73,19 @@ def on_change_calculation_type(calculation_type):
     return file_name, gr.update(choices=method_types, value="DFT"), functional_dropdown, gr.update(visible=show_tddft), gr.update(visible=show_tddft), gr.update(visible=show_tddft), gr.update(visible=show_spin_spin_couplings)
 
 def on_mm_checkbox_change(mm_checkbox: gr.Checkbox):
+    """Show/hide the force-field and max-iterations controls with the MM checkbox."""
     return gr.update(visible=mm_checkbox), gr.update(visible=mm_checkbox)
 
 def on_solvation_checkbox_change(solvation_checkbox: gr.Checkbox):
+    """Show/hide the solvation-model and solvent controls with the solvation checkbox."""
     return gr.update(visible=solvation_checkbox), gr.update(visible=solvation_checkbox)
 
 def on_method_type_change(method_type):
+    """Toggle method-name/functional/basis controls to match the chosen method type.
+
+    Semi-empirical shows a method-name dropdown (AM1/PM3) and hides the basis set;
+    DFT shows the functional; everything else shows only the basis set.
+    """
     show_method_name = (method_type=="Semi-empirical")
     show_functional = method_type=="DFT"
     show_basis_set = not (method_type=="Semi-empirical")
@@ -77,6 +104,13 @@ def on_generate_input_file(working_directory_path, input_structure_file_dropdown
                            use_solvation, solvation_model, solvent,
                            method_type, method_name, functional, basis_set_textbox, n_states, maxdim, root, spin_spin_coupling, charge, multiplicity,
                            n_cores, memory, input_file_name):
+    """Generate an ORCA ``.inp`` file for the selected structure and settings.
+
+    Loads the structure (optionally pre-optimizing it with MMFF/UFF molecular
+    mechanics), then dispatches to the matching ``write_*_orca_input`` helper based on
+    ``calculation_type``. Returns ``(status_html, file_list)``; errors are reported in
+    the status span rather than raised.
+    """
     if input_structure_file_dropdown is None or input_structure_file_dropdown == "":
         gr.Warning("Please select an input structure")
         return "", get_files_in_working_directory(working_directory_path)
@@ -136,6 +170,12 @@ def on_generate_input_file(working_directory_path, input_structure_file_dropdown
         return f"<span style='color:red;'>{status}</span>", get_files_in_working_directory(working_directory_path)
 
 def on_run_calculation(working_directory_path, input_file_name):
+    """Run the external ``orca`` binary on ``input_file_name`` (a ``.inp`` in the wd).
+
+    stdout is captured to a same-named ``.log``. Returns ``(status_html, file_list)``
+    with the elapsed time on success; a non-zero ORCA exit (or a missing binary) is
+    reported in the status span rather than raised.
+    """
     if input_file_name is None or input_file_name=="":
         gr.Warning("Please choose an input file.")
         return "", get_files_in_working_directory(working_directory_path)
@@ -160,6 +200,10 @@ def on_run_calculation(working_directory_path, input_file_name):
         return f"<span style='color:red;'>{status}</span>", get_files_in_working_directory(working_directory_path)
 
 def calculation_tab_content(working_directory_path_state, working_directory_file_list_state, status_markdown):
+    """Build the "Calculation" tab (settings, input generation, run) and wire events.
+
+    Takes the shared path/file-list states and status line; returns the tab component.
+    """
     with gr.Tab("Calculation") as calculation_tab:
         with gr.Accordion("Settings", open=False):
             with gr.Row():

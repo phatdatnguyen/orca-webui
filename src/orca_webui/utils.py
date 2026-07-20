@@ -1,15 +1,43 @@
+"""Core, UI-free engine for orca-webui.
+
+Groups two responsibilities used by every Gradio tab:
+
+1. Molecule I/O and ORCA input-file generation (``mol_from_*``, ``add_bonds``,
+   ``write_*_orca_input`` and helpers).
+2. Spectrum simulation and ORCA-output text parsing, including the NMR
+   shielding/coupling -> chemical-shift -> multiplet pipeline.
+
+Everything here is pure Python with no Gradio dependency so it can be tested and
+reused directly.
+"""
+from __future__ import annotations
+
 import os
 import re
-import cclib
+from typing import TextIO
+
 from rdkit import Chem
 import numpy as np
 import plotly.graph_objects as go
 
-def get_files_in_working_directory(working_directory_path):
+
+def get_files_in_working_directory(working_directory_path: str) -> list[str]:
+    """Return the file names in ``working_directory_path``.
+
+    Windows ``Zone.Identifier`` alternate-data-stream files (created when files are
+    downloaded) are filtered out so they never appear in the UI file list.
+    """
     files = [f for f in os.listdir(working_directory_path) if not f.endswith('Zone.Identifier')]
     return files
 
-def conformer_to_xyz_file(mol, conf_id, file_path, charge=0, multiplicity=1):
+def conformer_to_xyz_file(mol: Chem.Mol, conf_id: int, file_path: str,
+                          charge: int = 0, multiplicity: int = 1) -> None:
+    """Write one conformer of ``mol`` to an XYZ file.
+
+    The first line is ``"<charge> <multiplicity>"`` (the convention this app's XYZ
+    reader expects) rather than the standard atom count, followed by one
+    ``"<symbol> <x> <y> <z>"`` line per atom taken from conformer ``conf_id``.
+    """
     # Get atom information
     atoms = mol.GetAtoms()
     xyz_lines = []
@@ -23,7 +51,15 @@ def conformer_to_xyz_file(mol, conf_id, file_path, charge=0, multiplicity=1):
     with open(file_path, 'w') as file:
         file.write(xyz_string)
 
-def add_bonds(mol, bond_factor = 1.25):
+def add_bonds(mol: Chem.Mol, bond_factor: float = 1.25) -> Chem.Mol:
+    """Return a copy of ``mol`` with bonds inferred from interatomic distances.
+
+    Structure files such as XYZ carry only atoms and coordinates, so RDKit sees no
+    connectivity. Two atoms are joined by a single bond when their distance is below
+    ``(r_cov_i + r_cov_j) * bond_factor`` using RDKit's covalent radii. Bond orders
+    are not perceived (all bonds are single); this is enough for visualization and
+    for feeding coordinates into ORCA input generation.
+    """
     # Create a new empty molecule
     mol_new = Chem.RWMol()
     
@@ -50,7 +86,17 @@ def add_bonds(mol, bond_factor = 1.25):
     
     return mol_new
 
-def mol_from_xyz_file(file_path, return_charge_and_multiplicity=False):
+def mol_from_xyz_file(file_path: str, return_charge_and_multiplicity: bool = False):
+    """Read an XYZ file into a bond-free RDKit ``Mol`` with one conformer.
+
+    The first line may be ``"<charge> <multiplicity>"`` (as written by
+    :func:`conformer_to_xyz_file`); if it is not a two-integer line, charge/
+    multiplicity default to ``0``/``1``. Only lines with exactly four
+    whitespace-separated fields (symbol + x/y/z) are treated as atoms.
+
+    Returns the ``Mol`` alone, or ``(mol, charge, multiplicity)`` when
+    ``return_charge_and_multiplicity`` is True.
+    """
     with open(file_path, 'r') as file:
         xyz_string = file.read()
 
@@ -96,8 +142,20 @@ def mol_from_xyz_file(file_path, return_charge_and_multiplicity=False):
     else:
         return mol
 
-def mol_from_orca_file(filename):
-    # Parse the Gaussian file using cclib
+def mol_from_orca_file(filename: str) -> Chem.Mol:
+    """Read the final geometry from an ORCA output file into a bond-free ``Mol``.
+
+    Uses cclib to parse the log and takes the last set of coordinates
+    (``atomcoords[-1]``), i.e. the optimized geometry for an Opt job. The returned
+    molecule has atoms and one conformer but no bonds; pass it through
+    :func:`add_bonds` if connectivity is needed.
+    """
+    # cclib is imported lazily: it is only needed to parse ORCA/Gaussian output
+    # files, so the rest of utils (input generation, spectra, NMR text parsing)
+    # stays importable without this heavy optional dependency.
+    import cclib.io
+
+    # Parse the output file using cclib
     parser = cclib.io.ccopen(filename)
     data = parser.parse()
 
@@ -124,7 +182,14 @@ def mol_from_orca_file(filename):
 
     return mol
 
-def get_orca_method_keyword(method_type, method_name, functional, basis):
+def get_orca_method_keyword(method_type: str, method_name: str,
+                            functional: str, basis: str) -> str:
+    """Build the ORCA method/basis keyword string for the ``!`` command line.
+
+    Dispatches on ``method_type``: ``HF``/``MP2``/``CCSD``/``CCSD(T)`` use the type
+    name, ``DFT`` uses ``functional``, and anything else (semi-empirical) uses
+    ``method_name``. The basis set is appended in every case.
+    """
     if method_type == "HF":
         return f'HF {basis}'
     elif method_type == "DFT":
@@ -134,7 +199,18 @@ def get_orca_method_keyword(method_type, method_name, functional, basis):
     else:  # method_type == "Semi-empirical":
         return f'{method_name} {basis}'
 
-def get_orca_header(f, n_proc, memory, solvation, solvation_model, solvent, tddft=False, n_states=10, maxdim=5, root=0):
+def get_orca_header(f: TextIO, n_proc: int, memory: float | None,
+                    solvation: bool, solvation_model: str | None, solvent: str | None,
+                    tddft: bool = False, n_states: int = 10, maxdim: int = 5,
+                    root: int = 0) -> None:
+    """Write the ORCA ``%``-block header (parallel, memory, TDDFT, solvation) to ``f``.
+
+    Always writes the ``%pal`` block. ``%maxcore`` (per-core memory in MB) is written
+    only when ``memory`` is given (``memory`` is in GB). When ``tddft`` is set, a
+    ``%tddft`` block with ``nroots``/``maxdim``/``iroot`` is emitted. When
+    ``solvation`` is on and both a model and solvent are given, a ``%cpcm`` block is
+    written (SMD via ``smd true`` + ``smdsolvent``, otherwise plain CPCM ``solvent``).
+    """
     f.write(f'%pal\n  nprocs {n_proc}\nend\n')
     if memory is not None:
         maxcore = int(memory * 1024)
@@ -154,7 +230,11 @@ def get_orca_header(f, n_proc, memory, solvation, solvation_model, solvent, tddf
             f.write(f'  solvent "{solvent}"\n')
         f.write('end\n\n')
 
-def get_orca_coordinates(f, mol, charge, multiplicity):
+def get_orca_coordinates(f: TextIO, mol: Chem.Mol, charge: int, multiplicity: int) -> None:
+    """Write the ORCA ``* xyz ... *`` coordinate block for ``mol`` to ``f``.
+
+    Coordinates are taken from the molecule's active conformer.
+    """
     f.write(f'* xyz {charge} {multiplicity}\n')
     conf = mol.GetConformer()
     for atom in mol.GetAtoms():
@@ -164,35 +244,89 @@ def get_orca_coordinates(f, mol, charge, multiplicity):
         f.write(f'{symbol} {pos.x:>12.6f} {pos.y:>12.6f} {pos.z:>12.6f}\n')
     f.write('*\n')
 
-def write_sp_orca_input(mol, file_name, method_type, method_name, functional='B3LYP', basis='6-31G(d)', charge=0, multiplicity=1, solvation=False, solvation_model=None, solvent=None, n_proc=4, memory=2):
+def write_sp_orca_input(mol: Chem.Mol, file_name: str, method_type: str,
+                        method_name: str, functional: str = 'B3LYP',
+                        basis: str = '6-31G(d)', charge: int = 0, multiplicity: int = 1,
+                        solvation: bool = False, solvation_model: str | None = None,
+                        solvent: str | None = None, n_proc: int = 4,
+                        memory: float = 2) -> None:
+    """Write a single-point (``SP``) ORCA input file.
+
+    ``file_name`` is the path *without* extension; ``.inp`` is appended. See
+    :func:`get_orca_method_keyword` and :func:`get_orca_header` for how the method
+    line and ``%`` blocks are assembled.
+    """
     with open(file_name + '.inp', 'w') as f:
         method = get_orca_method_keyword(method_type, method_name, functional, basis)
         f.write(f'! {method} SP\n\n')
         get_orca_header(f, n_proc, memory, solvation, solvation_model, solvent)
         get_orca_coordinates(f, mol, charge, multiplicity)
 
-def write_opt_orca_input(mol, file_name, method_type, method_name, functional='B3LYP', basis='6-31G(d,p)', charge=0, multiplicity=1, solvation=False, solvation_model=None, solvent=None, n_proc=4, memory=2):
+def write_opt_orca_input(mol: Chem.Mol, file_name: str, method_type: str,
+                         method_name: str, functional: str = 'B3LYP',
+                         basis: str = '6-31G(d,p)', charge: int = 0, multiplicity: int = 1,
+                         solvation: bool = False, solvation_model: str | None = None,
+                         solvent: str | None = None, n_proc: int = 4,
+                         memory: float = 2) -> None:
+    """Write a geometry-optimization (``Opt``) ORCA input file.
+
+    ``file_name`` is the path without extension; ``.inp`` is appended.
+    """
     with open(file_name + '.inp', 'w') as f:
         method = get_orca_method_keyword(method_type, method_name, functional, basis)
         f.write(f'! {method} Opt\n\n')
         get_orca_header(f, n_proc, memory, solvation, solvation_model, solvent)
         get_orca_coordinates(f, mol, charge, multiplicity)
 
-def write_opt_freq_orca_input(mol, file_name, method_type, method_name, functional='B3LYP', basis='6-31G(d,p)', charge=0, multiplicity=1, solvation=False, solvation_model=None, solvent=None, n_proc=4, memory=2):
+def write_opt_freq_orca_input(mol: Chem.Mol, file_name: str, method_type: str,
+                              method_name: str, functional: str = 'B3LYP',
+                              basis: str = '6-31G(d,p)', charge: int = 0,
+                              multiplicity: int = 1, solvation: bool = False,
+                              solvation_model: str | None = None, solvent: str | None = None,
+                              n_proc: int = 4, memory: float = 2) -> None:
+    """Write an optimization + frequency (``Opt Freq``) ORCA input file.
+
+    The frequency step yields the vibrational/IR and thermochemistry data shown in
+    the Result tab. ``file_name`` is the path without extension; ``.inp`` is appended.
+    """
     with open(file_name + '.inp', 'w') as f:
         method = get_orca_method_keyword(method_type, method_name, functional, basis)
         f.write(f'! {method} Opt Freq\n\n')
         get_orca_header(f, n_proc, memory, solvation, solvation_model, solvent)
         get_orca_coordinates(f, mol, charge, multiplicity)
 
-def write_tddft_orca_input(mol, file_name, method_type, method_name, functional='B3LYP', basis='6-31G(d,p)', n_states=10, maxdim=5, root=0, charge=0, multiplicity=1, solvation=False, solvation_model=None, solvent=None, n_proc=4, memory=2):
+def write_tddft_orca_input(mol: Chem.Mol, file_name: str, method_type: str,
+                           method_name: str, functional: str = 'B3LYP',
+                           basis: str = '6-31G(d,p)', n_states: int = 10,
+                           maxdim: int = 5, root: int = 0, charge: int = 0,
+                           multiplicity: int = 1, solvation: bool = False,
+                           solvation_model: str | None = None, solvent: str | None = None,
+                           n_proc: int = 4, memory: float = 2) -> None:
+    """Write a TD-DFT input file (used for absorption/emission spectra).
+
+    Adds ``RIJCOSX TightSCF Opt`` to the method line and a ``%tddft`` block
+    (``n_states`` roots, expansion-space ``maxdim``, follow ``root`` for the
+    optimization). ``file_name`` is the path without extension; ``.inp`` is appended.
+    """
     with open(file_name + '.inp', 'w') as f:
         method = get_orca_method_keyword(method_type, method_name, functional, basis)
         f.write(f'! {method} RIJCOSX TightSCF Opt\n\n')
         get_orca_header(f, n_proc, memory, solvation, solvation_model, solvent, tddft=True, n_states=n_states, maxdim=maxdim, root=root)
         get_orca_coordinates(f, mol, charge, multiplicity)
 
-def write_nmr_orca_input(mol, file_name, method_type, functional='B3LYP', basis='6-31G(d,p)', spin_spin_coupling=False, charge=0, multiplicity=1, solvation=False, solvation_model=None, solvent=None, n_proc=4, memory=2):
+def write_nmr_orca_input(mol: Chem.Mol, file_name: str, method_type: str,
+                         functional: str = 'B3LYP', basis: str = '6-31G(d,p)',
+                         spin_spin_coupling: bool = False, charge: int = 0,
+                         multiplicity: int = 1, solvation: bool = False,
+                         solvation_model: str | None = None, solvent: str | None = None,
+                         n_proc: int = 4, memory: float = 2) -> None:
+    """Write an NMR (GIAO shielding) ORCA input file.
+
+    When ``spin_spin_coupling`` is set, an ``%eprnmr`` block requests all H and C
+    spin-spin couplings (``ssall``) within ``SpinSpinRThresh`` (3 A, enough for the
+    geminal/vicinal H-H pairs that produce 1H multiplets). ``file_name`` is the path
+    without extension; ``.inp`` is appended.
+    """
     with open(file_name + '.inp', 'w') as f:
         method = get_orca_method_keyword(method_type, '', functional, basis)
         f.write(f'! {method} NMR\n\n')
@@ -210,18 +344,30 @@ def write_nmr_orca_input(mol, file_name, method_type, functional='B3LYP', basis=
             f.write('end\n\n')
         
 
-def lorentzian_ir(wavenumber, position, intensity, width=10):
+def lorentzian_ir(wavenumber, position, intensity, width: float = 10):
+    """Lorentzian band shape (peak height = ``intensity`` at ``position``).
+
+    ``wavenumber`` may be a scalar or a numpy array (vectorized over the x-axis).
+    ``width`` is the half-width at half-maximum in cm^-1.
+    """
     return intensity * (width ** 2) / ((wavenumber - position) ** 2 + width ** 2)
 
 def generate_ir_spectrum_interactive(
     frequencies,
     intensities,
-    width=10.0,
-    points=4000,
-    plot_range=None,
-    normalize=True,
-    transmittance=True
-):
+    width: float = 10.0,
+    points: int = 4000,
+    plot_range: tuple[float, float] | None = None,
+    normalize: bool = True,
+    transmittance: bool = True,
+) -> go.Figure | None:
+    """Build an interactive IR spectrum from vibrational frequencies + IR intensities.
+
+    Each mode is broadened with a Lorentzian (:func:`lorentzian_ir`) and summed onto
+    a wavenumber grid. Optionally normalized and converted to transmittance
+    (``1 - absorbance``, with the x-axis reversed per IR convention). Returns a Plotly
+    figure, or ``None`` when no frequencies are supplied.
+    """
     # Safety check
     if frequencies is None or len(frequencies) == 0:
         print("No IR frequencies detected.")
@@ -300,11 +446,24 @@ def generate_ir_spectrum_interactive(
 
     return fig
 
-def gaussian(x, x0, fwhm):
+def gaussian(x, x0, fwhm: float):
+    """Unit-height Gaussian centered at ``x0`` with the given full width at half max.
+
+    ``x`` may be a scalar or numpy array (vectorized over the x-axis).
+    """
     sigma = fwhm / (2 * np.sqrt(2 * np.log(2)))
     return np.exp(-(x - x0)**2 / (2 * sigma**2))
 
-def generate_absorption_emission_spectrum_interactive(wavelengths, oscs, points=10000, plot_range=None):
+def generate_absorption_emission_spectrum_interactive(
+    wavelengths, oscs, points: int = 10000,
+    plot_range: tuple[float, float] | None = None,
+) -> go.Figure | None:
+    """Build an interactive UV-Vis spectrum from transition wavelengths + oscillator strengths.
+
+    Each transition is broadened with a Gaussian whose width grows with its oscillator
+    strength, weighted by that strength, and summed onto a wavelength grid. Returns a
+    normalized Plotly figure, or ``None`` when no transitions are supplied.
+    """
     # Check if wavelengths and oscs are valid
     if wavelengths is None or len(wavelengths) == 0:
         print(f"No absorption peak detected.")
@@ -334,8 +493,10 @@ def generate_absorption_emission_spectrum_interactive(wavelengths, oscs, points=
             'text': f"{wavelength:.2f}",
         })
 
-    # Normalize the spectrum
-    spectrum /= np.max(spectrum)
+    # Normalize the spectrum (guard against all-zero oscillator strengths)
+    max_intensity = np.max(spectrum)
+    if max_intensity != 0:
+        spectrum /= max_intensity
 
     # Create the Plotly figure
     fig = go.Figure()
@@ -381,7 +542,7 @@ def generate_absorption_emission_spectrum_interactive(wavelengths, oscs, points=
 
     return fig
 
-def parse_nmr_shielding_constants(logfile):
+def parse_nmr_shielding_constants(logfile: str) -> list[tuple[int, str, float]]:
     shielding_data = []
 
     pattern = re.compile(
@@ -424,7 +585,7 @@ def parse_nmr_shielding_constants(logfile):
 
     return shielding_data
 
-def parse_nmr_jcouplings(logfile):
+def parse_nmr_jcouplings(logfile: str) -> list[tuple[int, str, int, str, float]]:
     """Parse NMR spin-spin (J) coupling constants from an ORCA output file.
 
     Returns a list of tuples: (atom_a_idx, element_a, atom_b_idx, element_b, J_iso_Hz).
@@ -467,7 +628,12 @@ def parse_nmr_jcouplings(logfile):
         print("No NMR spin-spin coupling data found in the log file.")
     return jcouplings
 
-def calculate_chemical_shifts(shielding_data, reference_shieldings):
+def calculate_chemical_shifts(shielding_data: list[tuple[int, str, float]],
+                              reference_shieldings: dict[str, float]) -> list[tuple[int, str, float]]:
+    """Convert absolute shieldings to chemical shifts (delta = reference - shielding).
+
+    Atoms whose element has no entry in ``reference_shieldings`` are skipped.
+    """
     shifts_data = []
     for atom_idx, element, shielding in shielding_data:
         if element in reference_shieldings:
@@ -478,6 +644,10 @@ def calculate_chemical_shifts(shielding_data, reference_shieldings):
     return shifts_data
 
 def lorentzian_nmr(x, x0, gamma):
+    """Unit-height Lorentzian line centered at ``x0`` with half-width ``gamma`` (ppm).
+
+    ``x`` may be a scalar or numpy array (vectorized over the chemical-shift axis).
+    """
     return (gamma**2) / ((x - x0)**2 + gamma**2)
 
 # Cordero covalent radii (Angstrom) for the elements common in organic NMR.
@@ -487,7 +657,7 @@ _COVALENT_RADII = {
     'Si': 1.11, 'P': 1.07, 'S': 1.05, 'Cl': 1.02, 'Br': 1.20, 'I': 1.39,
 }
 
-def parse_orca_geometry(logfile):
+def parse_orca_geometry(logfile: str) -> tuple[list[str], np.ndarray]:
     """Parse the last 'CARTESIAN COORDINATES (ANGSTROEM)' block from an ORCA log.
 
     Returns (symbols, coords) in the SAME atom order as ORCA's NMR nucleus
@@ -518,7 +688,7 @@ def parse_orca_geometry(logfile):
                 symbols, coords = block_symbols, block_coords  # keep the last block
     return symbols, np.asarray(coords, dtype=float)
 
-def perceive_bonds(coords, symbols, tolerance=1.3):
+def perceive_bonds(coords, symbols: list[str], tolerance: float = 1.3) -> list[set[int]]:
     """Infer bonds from interatomic distances and covalent radii.
 
     Returns a list of sets, where adjacency[i] holds the indices bonded to atom i.
@@ -537,7 +707,7 @@ def perceive_bonds(coords, symbols, tolerance=1.3):
                 adjacency[j].add(i)
     return adjacency
 
-def morgan_ranks(coords, symbols):
+def morgan_ranks(coords, symbols: list[str]) -> tuple[list[set[int]], list[int]]:
     """Assign each atom a topological-symmetry rank (Morgan-style refinement).
 
     Atoms start with an invariant of (element, degree) on the perceived bond graph
@@ -558,7 +728,7 @@ def morgan_ranks(coords, symbols):
         ranks = new_ranks
     return adjacency, ranks
 
-def compute_hydrogen_equivalence(coords, symbols):
+def compute_hydrogen_equivalence(coords, symbols: list[str]) -> dict[int, object]:
     """Group hydrogens that are bonded to symmetry-equivalent heavy atoms.
 
     Freely-rotating groups (CH3, CH2, NH2) average their protons to a single signal,
@@ -584,7 +754,7 @@ def compute_hydrogen_equivalence(coords, symbols):
         equivalence[idx] = ('heavy', ranks[heavy_neighbors[0]]) if heavy_neighbors else f"H{idx}"
     return equivalence
 
-def compute_carbon_equivalence(coords, symbols):
+def compute_carbon_equivalence(coords, symbols: list[str]) -> dict[int, int]:
     """Group carbons that are topologically equivalent by molecular symmetry.
 
     Unlike hydrogens (which also average within a freely-rotating group), equivalent
@@ -604,7 +774,10 @@ def compute_carbon_equivalence(coords, symbols):
 # partners -> name). More than one coupling group concatenates letters (e.g. dd).
 _MULTIPLICITY_LETTER = {1: 'd', 2: 't', 3: 'q', 4: 'p', 5: 'h', 6: 'hept'}
 
-def build_nmr_peak_table(shifts_data, element_symbol, jcouplings=None, equivalence=None, j_threshold=0.5):
+def build_nmr_peak_table(shifts_data: list[tuple[int, str, float]], element_symbol: str,
+                         jcouplings: list[tuple[int, str, int, str, float]] | None = None,
+                         equivalence: dict[int, object] | None = None,
+                         j_threshold: float = 0.5) -> list[dict]:
     """Group nuclei of ``element_symbol`` into averaged multiplet peaks.
 
     Equivalent nuclei merge into one peak whose chemical shift is the average of
@@ -684,13 +857,28 @@ def build_nmr_peak_table(shifts_data, element_symbol, jcouplings=None, equivalen
     peaks.sort(key=lambda p: p['shift'])
     return peaks
 
-def multiplicity_label(couplings):
+def multiplicity_label(couplings: list[dict]) -> str:
     """Human-readable multiplicity (s/d/t/q/...) for a peak's coupling list."""
     if not couplings:
         return 's'
     return ''.join(_MULTIPLICITY_LETTER.get(c['n'], 'm') for c in couplings)
 
-def generate_nmr_spectrum_interactive(shifts_data, element_symbol, linewidth=0.5, points=10000, frequency=400, plot_range=None, jcouplings=None, equivalence=None):
+def generate_nmr_spectrum_interactive(
+    shifts_data: list[tuple[int, str, float]], element_symbol: str,
+    linewidth: float = 0.5, points: int = 10000, frequency: float = 400,
+    plot_range: tuple[float, float] | None = None,
+    jcouplings: list[tuple[int, str, int, str, float]] | None = None,
+    equivalence: dict[int, object] | None = None,
+) -> go.Figure | None:
+    """Build an interactive NMR spectrum for ``element_symbol`` from chemical shifts.
+
+    Nuclei are grouped into averaged multiplet peaks (:func:`build_nmr_peak_table`),
+    each rendered as a first-order Pascal multiplet: coupling to ``n`` equivalent
+    partners splits a line into ``n + 1`` sub-peaks separated by ``J / frequency``
+    (Hz -> ppm), broadened with a Lorentzian (:func:`lorentzian_nmr`). The x-axis is
+    reversed per NMR convention. Returns a Plotly figure, or ``None`` when no nuclei
+    of ``element_symbol`` are present.
+    """
     # Filter shifts for the desired element
     shifts = [(atom_idx, element, shift) for atom_idx, element, shift in shifts_data if element == element_symbol]
 

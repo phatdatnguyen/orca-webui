@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cd \"\\\\\\\\wsl.localhost\\\\Ubuntu-24.04\\\\home\\\\datnguyen\\\\github\\\\orca-webui\")",
+      "Bash(python -m py_compile working_directory.py conformer_generation.py result.py utils.py calculation.py webui.py)",
+      "Bash(python -)",
+      "Bash(python -m pip install -q pytest)",
+      "Bash(python -m pytest -q)",
+      "Bash(python -c \"import utils; print\\('utils imports OK'\\)\")",
+      "Bash(python -m py_compile webui.py working_directory.py conformer_generation.py calculation.py result.py utils.py)",
+      "Bash(python -c \"import utils; print\\('utils import OK'\\)\")",
+      "Bash(python -c \"import sys; sys.path.insert\\(0,'src'\\); import orca_webui, orca_webui.utils; print\\('pkg', orca_webui.__version__, 'utils OK'\\)\")",
+      "Bash(python -m pip install -q --upgrade build twine)",
+      "Bash(python -m build)",
+      "Bash(python -m twine check dist/*)",
+      "Bash(python -c \"import tarfile,glob; t=tarfile.open\\(glob.glob\\('dist/*.tar.gz'\\)[0]\\); [print\\(n\\) for n in t.getnames\\(\\)]\")",
+      "Bash(python -m pip install -q --no-deps --force-reinstall dist/*.whl)",
+      "Bash(python -c \"import orca_webui; print\\('version:', orca_webui.__version__\\)\")",
+      "Bash(python -c \"import importlib.metadata as m; eps=[e for e in m.entry_points\\(group='console_scripts'\\) if e.name=='orca-webui']; print\\('console_script:', eps[0].name, '->', eps[0].value\\)\")",
+      "Bash(python -c \"import shutil; print\\('orca-webui on PATH:', shutil.which\\('orca-webui'\\)\\)\")",
+      "Bash(python -m pip uninstall -y orca-webui)"
+    ]
+  }
+}

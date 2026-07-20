@@ -1,27 +1,51 @@
+"""Conformer-generation tab: draw/enter a molecule and embed 3D conformers.
+
+A SMILES string (typed, or produced by the 2D editor) is embedded into ``num_confs``
+RDKit conformers, each written to the working directory as an XYZ/PDB/MOL structure
+file for later ORCA calculations.
+"""
 import os
 from rdkit import Chem
 from rdkit.Chem import AllChem
 import gradio as gr
 from gradio_molecule2d import molecule2d
-from utils import get_files_in_working_directory, conformer_to_xyz_file
+from .utils import get_files_in_working_directory, conformer_to_xyz_file
 
-def on_draw_molecule(molecule_editor):
+def on_draw_molecule(molecule_editor: str) -> str:
+    """Canonicalize the SMILES coming from the 2D editor (empty string if invalid)."""
     mol = Chem.MolFromSmiles(molecule_editor)
     if mol is None:
         return ""
-    
+
     return Chem.MolToSmiles(mol, canonical=True)
 
-def on_generate_conformers(working_directory_path, input_smiles, charge, multiplicity, num_confs, file_name, file_type, progress=gr.Progress()):
+def on_generate_conformers(working_directory_path: str, input_smiles: str, charge: int,
+                           multiplicity: int, num_confs: int, file_name: str,
+                           file_type: str, progress=gr.Progress()):
+    """Embed conformers of ``input_smiles`` and write one structure file each.
+
+    Returns ``(status_html, file_list)`` where ``status_html`` is a colored status
+    span and ``file_list`` is the refreshed working-directory listing (fed back into
+    the shared file-list state). Errors (invalid SMILES, no embeddable conformer, or
+    any RDKit failure) are reported in the status span rather than raised.
+    """
     try:
         # Generate conformers
         mol = Chem.MolFromSmiles(input_smiles)
+        if mol is None:
+            status = 'Error generating conformers: invalid SMILES.'
+            return f"<span style='color:red;'>{status}</span>", get_files_in_working_directory(working_directory_path)
         mol = Chem.AddHs(mol)
-        AllChem.EmbedMultipleConfs(mol, numConfs=num_confs)
-        
-        for conf_id in progress.tqdm(range(num_confs), total=num_confs, desc="Generating"):
+        # EmbedMultipleConfs may return FEWER conformers than requested (or none for
+        # a molecule it cannot embed), so iterate the ids it actually created.
+        conf_ids = list(AllChem.EmbedMultipleConfs(mol, numConfs=num_confs))
+        if len(conf_ids) == 0:
+            status = 'Error generating conformers: RDKit could not embed any conformer for this molecule.'
+            return f"<span style='color:red;'>{status}</span>", get_files_in_working_directory(working_directory_path)
+
+        for i, conf_id in enumerate(progress.tqdm(conf_ids, total=len(conf_ids), desc="Generating")):
             # Create a unique file name for each conformer
-            conf_file_path = os.path.join(working_directory_path, f'{file_name}_{conf_id + 1}')
+            conf_file_path = os.path.join(working_directory_path, f'{file_name}_{i + 1}')
             # Write conformers geometry to file
             if file_type == 'xyz':
                 conf_file_path += '.xyz'
@@ -44,6 +68,12 @@ def show_selected_file(selected_file):
     return selected_file
 
 def conformer_generation_tab_content(working_directory_path_state, working_directory_file_list_state, status_markdown):
+    """Build the "Conformer generation" tab and wire its events.
+
+    ``working_directory_path_state`` / ``working_directory_file_list_state`` are the
+    shared ``gr.State`` objects from the working-directory column; ``status_markdown``
+    is the shared status line. Returns the tab component.
+    """
     with gr.Tab("Conformer generation") as conformer_generation_tab:
         with gr.Row():
             with gr.Column(scale=2):
