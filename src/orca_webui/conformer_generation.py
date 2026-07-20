@@ -8,8 +8,17 @@ import os
 from rdkit import Chem
 from rdkit.Chem import AllChem
 import gradio as gr
-from gradio_molecule2d import molecule2d
 from .utils import get_files_in_working_directory, conformer_to_xyz_file
+
+# The 2D drawing editor is an optional convenience: gradio_molecule2d 0.0.3 pins
+# gradio<5.0, which conflicts with the gradio 5.x this app targets, so it cannot be a
+# hard dependency. When it is not installed, the tab simply omits the editor and users
+# enter a SMILES string directly. To enable it, install it without its deps:
+#   pip install gradio_molecule2d --no-deps
+try:
+    from gradio_molecule2d import molecule2d
+except ImportError:
+    molecule2d = None
 
 def on_draw_molecule(molecule_editor: str) -> str:
     """Canonicalize the SMILES coming from the 2D editor (empty string if invalid)."""
@@ -78,7 +87,16 @@ def conformer_generation_tab_content(working_directory_path_state, working_direc
         with gr.Row():
             with gr.Column(scale=2):
                 with gr.Accordion("Molecular Structure"):
-                    molecule_editor = molecule2d(label="Molecule")
+                    # Render the drawing editor only when gradio_molecule2d is available.
+                    if molecule2d is not None:
+                        molecule_editor = molecule2d(label="Molecule")
+                    else:
+                        molecule_editor = None
+                        gr.Markdown(
+                            "The 2D structure editor is unavailable. Install it with "
+                            "`pip install gradio_molecule2d --no-deps` to enable drawing, "
+                            "or just enter a SMILES string on the right."
+                        )
             with gr.Column(scale=1):
                 with gr.Accordion("Generate Conformers"):
                     input_smiles_texbox = gr.Textbox(label="SMILES")
@@ -90,7 +108,9 @@ def conformer_generation_tab_content(working_directory_path_state, working_direc
                     generate_button = gr.Button(value="Generate")
                     status_markdown = gr.Markdown()
 
-    molecule_editor.change(on_draw_molecule, molecule_editor, input_smiles_texbox)
+    # Wire the editor -> SMILES sync only when the editor was rendered.
+    if molecule_editor is not None:
+        molecule_editor.change(on_draw_molecule, molecule_editor, input_smiles_texbox)
     generate_button.click(on_generate_conformers, [working_directory_path_state, input_smiles_texbox, charge_slider, multiplicity_dropdown, num_confs_slider, file_name_textbox, file_type_dropdown], [status_markdown, working_directory_file_list_state])
         
     return conformer_generation_tab

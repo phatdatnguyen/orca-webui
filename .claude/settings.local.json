@@ -18,7 +18,9 @@
       "Bash(python -c \"import orca_webui; print\\('version:', orca_webui.__version__\\)\")",
       "Bash(python -c \"import importlib.metadata as m; eps=[e for e in m.entry_points\\(group='console_scripts'\\) if e.name=='orca-webui']; print\\('console_script:', eps[0].name, '->', eps[0].value\\)\")",
       "Bash(python -c \"import shutil; print\\('orca-webui on PATH:', shutil.which\\('orca-webui'\\)\\)\")",
-      "Bash(python -m pip uninstall -y orca-webui)"
+      "Bash(python -m pip uninstall -y orca-webui)",
+      "Bash(python -m py_compile src/orca_webui/conformer_generation.py)",
+      "Bash(python -c ' *)"
     ]
   }
 }

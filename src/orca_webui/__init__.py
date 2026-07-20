@@ -6,4 +6,4 @@ lightweight consumers (e.g. importing :mod:`orca_webui.utils` for its parsing/sp
 helpers) do not pull in the full Gradio/FastAPI UI stack.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
