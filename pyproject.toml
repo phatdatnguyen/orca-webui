@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "orca-webui"
-version = "0.1.1"
+version = "0.1.2"
 description = "A Gradio web UI for simple ORCA computational-chemistry calculations (single point, geometry optimization, frequency/IR, TD-DFT UV-Vis, and NMR)."
 readme = "Readme.md"
 requires-python = ">=3.10"
@@ -40,6 +40,9 @@ dependencies = [
     "gradio==5.50.0",
     "nglview==4.0",
     "rdkit",
+    # cclib 1.8.x (latest PyPI release) parses ORCA <= 6.0. Output from ORCA 6.1+ needs
+    # the development cclib until the next release; see the README "Newer ORCA versions"
+    # note:  pip install --upgrade "cclib @ git+https://github.com/cclib/cclib.git"
     "cclib>=1.8",
     "numpy",
     "pandas",

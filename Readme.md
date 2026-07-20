@@ -59,6 +59,21 @@ pip install gradio_molecule2d --no-deps
 Without it, the app runs fine — you simply enter a SMILES string directly instead of
 drawing.
 
+### Newer ORCA versions (6.1+) and cclib
+
+Results are parsed with [cclib](https://cclib.github.io/). The latest **released** cclib
+(1.8.1) predates ORCA 6.1 and cannot parse its output — loading such a result file fails
+with an error like *"cclib could not parse this file ... list index out of range."* The
+fix is already in cclib's development version, so until the next cclib release, install it
+from git:
+
+```
+pip install --upgrade "cclib @ git+https://github.com/cclib/cclib.git"
+```
+
+If your calculations come from ORCA 6.0 or earlier, the released cclib pulled in by
+`pip install orca-webui` is sufficient.
+
 ## Start web UI
 
 Run the console command from the directory where you want your `data/` and `static/`

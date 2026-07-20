@@ -43,8 +43,20 @@ def on_load_result_file(working_directory_path, calculation_result_file_name, h_
     try:
         calculation_result_file_path = os.path.join(working_directory_path, calculation_result_file_name)
         parser = cclib.io.ccopen(calculation_result_file_path)
-        data = parser.parse()
-        
+        try:
+            data = parser.parse()
+        except Exception as parse_exc:
+            # cclib itself failed to parse the file. The common cause is output from a
+            # newer ORCA version (e.g. 6.1+) combined with an older released cclib that
+            # doesn't recognize the new blocks yet (surfaces as e.g. "list index out of
+            # range"). Point the user at the development cclib, which supports it.
+            raise RuntimeError(
+                f"cclib could not parse this file ({type(parse_exc).__name__}: {parse_exc}). "
+                "This usually means the installed cclib is too old for the ORCA version that "
+                "produced it. Upgrade cclib with: "
+                'pip install --upgrade "cclib @ git+https://github.com/cclib/cclib.git"'
+            ) from parse_exc
+
         # Display energy result
         if hasattr(data, "scfenergies") and hasattr(data, "moenergies"):
             show_enery_result = True
