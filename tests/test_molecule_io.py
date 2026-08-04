@@ -83,6 +83,40 @@ def test_add_bonds_infers_connectivity():
     assert bonded.GetNumBonds() == 5
 
 
+def test_add_bonds_charges_tetravalent_boron(tmp_path):
+    """A 4-coordinate boron (borate) must receive a -1 formal charge so the molecule
+    passes RDKit sanitization instead of raising "Explicit valence for atom B, 4, is
+    greater than permitted". This is the BF2 bridge case in BODIPY dyes; modeled here
+    with a tetrahedral BF4- so the test needs no external file.
+    """
+    path = tmp_path / "bf4.xyz"
+    path.write_text(
+        "0 1\nBF4\n"
+        "B  0.000  0.000  0.000\n"
+        "F  0.810  0.810  0.810\n"
+        "F -0.810 -0.810  0.810\n"
+        "F -0.810  0.810 -0.810\n"
+        "F  0.810 -0.810 -0.810\n"
+    )
+    mol = utils.add_bonds(utils.mol_from_xyz_file(str(path)))
+    boron = next(a for a in mol.GetAtoms() if a.GetSymbol() == "B")
+    assert boron.GetDegree() == 4
+    assert boron.GetFormalCharge() == -1
+    Chem.SanitizeMol(mol)  # must not raise
+
+
+def test_add_bonds_leaves_normal_valences_uncharged():
+    """Ordinary (non-over-coordinated) atoms keep a zero formal charge."""
+    mol = Chem.AddHs(Chem.MolFromSmiles("CO"))  # methanol: normal C, O valences
+    assert AllChem.EmbedMolecule(mol, randomSeed=5) == 0
+    rw = Chem.RWMol()
+    for atom in mol.GetAtoms():
+        rw.AddAtom(Chem.Atom(atom.GetAtomicNum()))
+    rw.AddConformer(mol.GetConformer(), assignId=True)
+    bonded = utils.add_bonds(rw.GetMol())
+    assert all(a.GetFormalCharge() == 0 for a in bonded.GetAtoms())
+
+
 def test_add_bonds_preserves_conformer_geometry():
     """add_bonds must keep the input geometry (exactly one conformer, same coords).
 

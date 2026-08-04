@@ -26,7 +26,9 @@
       "Bash(python -m pip install -q --upgrade \"cclib @ git+https://github.com/cclib/cclib.git\")",
       "Bash(python -c \"import cclib; print\\('cclib now:', cclib.__version__\\)\")",
       "Bash(python -m py_compile src/orca_webui/result.py)",
-      "Bash(python -m py_compile src/orca_webui/working_directory.py)"
+      "Bash(python -m py_compile src/orca_webui/working_directory.py)",
+      "Read(///wsl.localhost/Ubuntu/home/datnguyen/github/**)",
+      "Read(///wsl.localhost/Ubuntu/mnt/**)"
     ]
   }
 }

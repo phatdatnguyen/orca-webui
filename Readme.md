@@ -101,6 +101,9 @@ your browser).
 
 ## Development (from source)
 
+You never need to publish to PyPI to work on the app — that step is only for *other*
+people to install it.
+
 ```
 git clone https://github.com/phatdatnguyen/orca-webui
 cd orca-webui
@@ -111,8 +114,63 @@ source orca-env/bin/activate          # Windows: orca-env\Scripts\activate.bat
 
 # install in editable mode with the dev extras (pytest, build, twine)
 pip install -e ".[dev]"
+pip install gradio_molecule2d --no-deps   # optional 2D editor, see above
 
 # run the app and the tests
 orca-webui
 pytest
+```
+
+The `-e` (editable) flag is the important part: pip records a path hook pointing at
+`src/`, so your edits are picked up on the next restart and you never reinstall. A plain
+`pip install .` *copies* the package into `site-packages`, which is why changes appear to
+be ignored until you reinstall. To check which one you have:
+
+```
+pip show orca-webui | grep -i location   # editable installs report the repo's src/ path
+```
+
+If it points into `site-packages`, swap it:
+
+```
+pip uninstall -y orca-webui
+pip install -e .
+```
+
+### Running without installing at all
+
+Because `orca_webui` is a regular package with relative imports, you can run it straight
+from the source tree:
+
+```
+PYTHONPATH=src python -m orca_webui.app
+```
+
+Use `python -m orca_webui.app`, not `python src/orca_webui/app.py` — the latter fails on
+the package-relative imports. Run it from the repository root, since `build_app()` creates
+`data/` and `static/` relative to the current working directory.
+
+### Auto-reload on file save
+
+`build_app()` returns the FastAPI app, so it can be used directly as a uvicorn factory:
+
+```
+PYTHONPATH=src python -m uvicorn orca_webui.app:build_app --factory --reload --reload-dir src --port 7860
+```
+
+The server restarts whenever anything under `src/` changes. Note that `--reload` bypasses
+`main()`, so the automatic "first free port at/after 7860" selection does not apply — pick
+the port yourself.
+
+### Copying the project to another directory
+
+Virtual environments are **not** relocatable: `orca-env/pyvenv.cfg` and the activate
+scripts contain the absolute path they were created at. After copying or moving the
+project, delete the old environment and recreate it:
+
+```
+rm -rf orca-env
+python -m venv orca-env
+source orca-env/bin/activate
+pip install -e ".[dev]"
 ```

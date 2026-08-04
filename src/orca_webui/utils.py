@@ -59,10 +59,15 @@ def add_bonds(mol: Chem.Mol, bond_factor: float = 1.25) -> Chem.Mol:
     ``(r_cov_i + r_cov_j) * bond_factor`` using RDKit's covalent radii. Bond orders
     are not perceived (all bonds are single); this is enough for visualization and
     for feeding coordinates into ORCA input generation.
+
+    Formal charges are assigned to hypervalent main-group atoms so the result passes
+    ``Chem.SanitizeMol`` — currently 4-coordinate boron (see ``_assign_formal_charges``),
+    e.g. the ``BF2`` bridge in BODIPY dyes. These are per-atom bookkeeping charges only;
+    the overall charge used for an ORCA calculation is set separately by the user.
     """
     # Create a new empty molecule
     mol_new = Chem.RWMol()
-    
+
     # Add atoms
     for atom in mol.GetAtoms():
         mol_new.AddAtom(atom)
@@ -81,10 +86,37 @@ def add_bonds(mol: Chem.Mol, bond_factor: float = 1.25) -> Chem.Mol:
             if dist < (r_cov_i + r_cov_j) * bond_factor:
                 mol_new.AddBond(i, j, Chem.BondType.SINGLE)
 
+    # Reconcile valences that would otherwise fail sanitization (e.g. borate boron).
+    _assign_formal_charges(mol_new)
+
     # Convert to a regular Mol object
     mol_new = mol_new.GetMol()
-    
+
     return mol_new
+
+# Neutral bonding valence for main-group elements whose over-coordination (with the
+# all-single-bond perception used here) implies a formal charge. degree - valence gives
+# the charge: 4-coordinate boron -> -1 (borate), a 4th bond on N -> +1 (ammonium), etc.
+_NEUTRAL_VALENCE = {'B': 3, 'N': 3, 'O': 2}
+
+def _assign_formal_charges(mol: Chem.RWMol) -> None:
+    """Assign formal charges so over-coordinated main-group atoms pass sanitization.
+
+    Only atoms bonded to MORE neighbors than their neutral valence are touched, and the
+    charge is the difference (boron gains electrons -> negative; N/O lose -> positive).
+    This fixes structures like BODIPY's 4-coordinate borate boron, which RDKit otherwise
+    rejects with "Explicit valence for atom B, 4, is greater than permitted."
+    """
+    for atom in mol.GetAtoms():
+        neutral = _NEUTRAL_VALENCE.get(atom.GetSymbol())
+        if neutral is None:
+            continue
+        excess = atom.GetDegree() - neutral
+        if excess > 0:
+            # Group 13 (B) is electron-deficient: an extra bond makes it anionic;
+            # groups 15/16 (N, O) become cationic.
+            sign = -1 if atom.GetSymbol() == 'B' else 1
+            atom.SetFormalCharge(sign * excess)
 
 def mol_from_xyz_file(file_path: str, return_charge_and_multiplicity: bool = False):
     """Read an XYZ file into a bond-free RDKit ``Mol`` with one conformer.
