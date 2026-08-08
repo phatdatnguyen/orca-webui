@@ -99,6 +99,33 @@ orca-webui
 It starts a local server on the first free port at/after 7860 (open the printed URL in
 your browser).
 
+### Running a calculation
+
+The **Settings** accordion on the Calculation tab controls how ORCA is invoked:
+
+* **ORCA executable path** — defaults to whatever `which orca` finds. ORCA refuses to
+  start a parallel run when it is launched by bare command name (*"For parallel runs
+  ORCA has to be called with full pathname"*), so the full path is used. Set it by hand
+  if ORCA is not on your `PATH`.
+* **Number of cores** — capped at half the logical CPU count, which is the physical core
+  count on a hyperthreaded machine; ORCA fails to start above that.
+* **Memory per core (GB)** — this is ORCA's `%maxcore`, a **per-process** budget, so the
+  calculation may claim `cores x maxcore` in total. The slider's ceiling therefore
+  shrinks as the core count rises, keeping the product inside physical RAM.
+
+**Run** starts the calculation and greys out until it finishes; **Stop** terminates it
+early, killing ORCA's MPI workers along with the launcher. If a `.log` from a previous
+run already exists it is renamed to `.log.bak` before the new run starts, so an
+accidental click cannot destroy earlier results.
+
+### Reading atom indices off the structure viewer
+
+The structure viewer labels each atom with its element and its position in the file
+(`C1`, `C2`, `O3`, ...). That numbering is the order of the `* xyz` coordinate block in
+the generated `.inp`, so it can be used to identify specific nuclei — e.g. when choosing
+J-coupling partners. Note ORCA numbers nuclei from **0** in its output, so viewer label
+`O3` is ORCA's nucleus `2`.
+
 ## Development (from source)
 
 You never need to publish to PyPI to work on the app — that step is only for *other*

@@ -151,3 +151,37 @@ def test_mol_from_orca_file_requires_cclib_only_when_called():
     with pytest.raises(Exception) as excinfo:
         utils.mol_from_orca_file(os.path.join("does", "not", "exist.log"))
     assert not isinstance(excinfo.value, ImportError)
+
+
+# --- mol_from_orca_geometry (ORCA nucleus order, no cclib) -------------------
+
+def test_mol_from_orca_geometry_matches_orca_nucleus_numbering(tmp_path, nmr_log_text):
+    """Atom indices must line up with the nucleus indices ORCA reports.
+
+    The structure viewer labels atoms "<element> (index=<n>)" so a user can pick
+    J-coupling partners by eye; those numbers are only meaningful if index n really is
+    ORCA nucleus n. cclib reorders atoms, hence this cclib-free path.
+    """
+    log = tmp_path / "nmr.log"
+    log.write_text(nmr_log_text)
+
+    mol = utils.mol_from_orca_geometry(str(log))
+    viewer = [(a.GetIdx(), a.GetSymbol()) for a in mol.GetAtoms()]
+    orca = [(idx, elem) for idx, elem, _ in utils.parse_nmr_shielding_constants(str(log))]
+
+    assert viewer == orca == [(0, "C"), (1, "H"), (2, "H")]
+
+
+def test_mol_from_orca_geometry_keeps_coordinates(tmp_path, nmr_log_text):
+    """The conformer must carry the log geometry, not a re-embedded one."""
+    log = tmp_path / "nmr.log"
+    log.write_text(nmr_log_text)
+
+    mol = utils.mol_from_orca_geometry(str(log))
+    _, coords = utils.parse_orca_geometry(str(log))
+    conf = mol.GetConformer()
+
+    assert mol.GetNumConformers() == 1
+    for i, (x, y, z) in enumerate(coords):
+        pos = conf.GetAtomPosition(i)
+        assert abs(pos.x - x) < 1e-6 and abs(pos.y - y) < 1e-6 and abs(pos.z - z) < 1e-6

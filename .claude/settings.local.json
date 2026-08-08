@@ -28,7 +28,9 @@
       "Bash(python -m py_compile src/orca_webui/result.py)",
       "Bash(python -m py_compile src/orca_webui/working_directory.py)",
       "Read(///wsl.localhost/Ubuntu/home/datnguyen/github/**)",
-      "Read(///wsl.localhost/Ubuntu/mnt/**)"
+      "Read(///wsl.localhost/Ubuntu/mnt/**)",
+      "Bash(wsl.exe -e echo ok)",
+      "Bash(wsl.exe *)"
     ]
   }
 }

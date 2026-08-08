@@ -5,14 +5,23 @@ so the whole module is skipped when those optional UI deps are absent. Run them 
 full application environment (the venv) to exercise the fixed bugs end-to-end.
 """
 import os
+import sys
 
 import pytest
 
 
 class FakeProgress:
-    """Stand-in for gr.Progress(): .tqdm() just passes the iterable through."""
+    """Stand-in for gr.Progress().
+
+    ``.tqdm()`` passes the iterable straight through, and the instance is callable
+    because the conformer search reports fractional progress with ``progress(x, desc=)``
+    as well as wrapping loops in ``.tqdm``.
+    """
     def tqdm(self, iterable, total=None, desc=None):
         return iterable
+
+    def __call__(self, fraction, desc=None):
+        return None
 
 
 # --- working_directory.on_file_list_change: chronological sort ---------------
@@ -43,8 +52,8 @@ def test_generate_conformers_invalid_smiles_returns_error(tmp_path):
     pytest.importorskip("gradio_molecule2d")
     from orca_webui import conformer_generation
 
-    status, _files = conformer_generation.on_generate_conformers(
-        str(tmp_path), "not_a_valid_smiles", 0, 1, 3, "conformer", "xyz",
+    status, _files, _table = conformer_generation.on_generate_conformers(
+        str(tmp_path), "not_a_valid_smiles", 0, 1, 3, 0.1, 0.5, "conformer", "xyz",
         progress=FakeProgress())
     assert "invalid SMILES" in status
     assert "color:red" in status
@@ -56,10 +65,12 @@ def test_generate_conformers_writes_expected_files(tmp_path):
     pytest.importorskip("gradio_molecule2d")
     from orca_webui import conformer_generation
 
-    status, _files = conformer_generation.on_generate_conformers(
-        str(tmp_path), "CCO", 0, 1, 3, "conformer", "xyz",
+    status, _files, table = conformer_generation.on_generate_conformers(
+        str(tmp_path), "CCO", 0, 1, 3, 0.1, 0.5, "conformer", "xyz",
         progress=FakeProgress())
-    assert "color:green" in status
+    # Green when all 3 were kept, orange when deduplication left fewer; either way the
+    # run succeeded, and only the error path is coloured red.
+    assert "color:red" not in status
     produced = sorted(p.name for p in tmp_path.glob("conformer_*.xyz"))
     # RDKit may embed fewer than requested; every produced file is named
     # sequentially and no GetConformer(bad_id) crash occurs (the fixed bug).
@@ -67,3 +78,144 @@ def test_generate_conformers_writes_expected_files(tmp_path):
     assert produced[0] == "conformer_1.xyz"
     for name in produced:
         assert (tmp_path / name).read_text().strip() != ""
+    # One table row per file written.
+    assert len(table) == len(produced)
+
+
+# --- no working directory open: shared states are None ----------------------
+# os.listdir(None) silently lists the *current* directory rather than raising, so a
+# None path used to yield a plausible-looking file list that blew up downstream.
+
+def test_file_list_handlers_tolerate_no_working_directory():
+    pytest.importorskip("gradio")
+    pytest.importorskip("nglview")
+    from orca_webui import calculation, result, utils, working_directory
+
+    assert utils.get_files_in_working_directory(None) == []
+    assert utils.get_files_in_working_directory("") == []
+
+    empty = working_directory.on_file_list_change(None)
+    assert len(empty) == 0
+    assert list(empty.columns) == ["File", "Type", "Modified"]
+
+    structures, inputs = calculation.on_working_directory_file_list_change(None, None)
+    assert structures["choices"] == [] and inputs["choices"] == []
+
+    assert result.on_working_directory_file_list_change(None)["choices"] == []
+
+
+# --- calculation.on_run_calculation: the .log is not clobbered --------------
+# sys.executable stands in for the ORCA binary: the handler runs "<exe> <input file>",
+# so an .inp holding valid Python runs and exits 0 on any platform.
+
+def test_run_calculation_backs_up_previous_log(tmp_path):
+    pytest.importorskip("gradio")
+    from orca_webui import calculation
+
+    (tmp_path / "run.inp").write_text('print("SECOND RUN")\n')
+    (tmp_path / "run.log").write_text("FIRST RUN RESULTS")
+
+    status, _files = calculation.on_run_calculation(str(tmp_path), "run.inp", sys.executable)
+
+    assert "color:red" not in status
+    assert (tmp_path / "run.log.bak").read_text().strip() == "FIRST RUN RESULTS"
+    assert "SECOND RUN" in (tmp_path / "run.log").read_text()
+    assert "run.log.bak" in status  # the rescue is reported to the user
+
+
+def test_run_calculation_makes_no_backup_on_first_run(tmp_path):
+    pytest.importorskip("gradio")
+    from orca_webui import calculation
+
+    (tmp_path / "run.inp").write_text('print("FIRST RUN")\n')
+
+    status, _files = calculation.on_run_calculation(str(tmp_path), "run.inp", sys.executable)
+
+    assert "color:red" not in status
+    assert not (tmp_path / "run.log.bak").exists()
+    assert ".bak" not in status
+
+
+def test_run_calculation_reports_missing_executable(tmp_path):
+    pytest.importorskip("gradio")
+    from orca_webui import calculation
+
+    (tmp_path / "run.inp").write_text("dummy\n")
+
+    status, _files = calculation.on_run_calculation(
+        str(tmp_path), "run.inp", os.path.join(os.sep, "nonexistent", "orca"))
+
+    assert "color:red" in status
+    # Bailing out before the run means the previous log is left untouched.
+    assert not (tmp_path / "run.log").exists()
+
+
+# --- working_directory.on_view_structure_file: atom labels ------------------
+
+ETHANOL_XYZ = """0 1
+C 0.9026489597488216 -0.05000028588257832 0.021394609774926115
+C -0.5742031126818012 -0.385505872155332 0.04058986810948101
+O -1.3316454554006916 0.7756870576731353 0.3485124118176326
+H 1.2173201961756799 0.35934440949711477 0.9869668094581394
+H 1.116183702004607 0.7142026160257686 -0.7331640213952032
+H 1.5014612719973133 -0.9382867335837253 -0.19824701389828622
+H -0.7850341567874283 -1.1421184407750054 0.8019259675018772
+H -0.9017076062007929 -0.7714452849250665 -0.9295025768488222
+H -1.1450237988557044 1.4381225341256896 -0.33847605451974583
+"""
+
+
+def test_structure_viewer_labels_atoms_by_file_position(tmp_path, monkeypatch):
+    """Labels must number atoms by their position in the file, not per element.
+
+    NGL's "atomname" labels come from the PDB block nglview generates, and RDKit
+    numbers those per element -- which rendered ethanol's third atom as "O1" (the first
+    oxygen) instead of "O3" (the third coordinate line of the generated .inp).
+    """
+    pytest.importorskip("gradio")
+    pytest.importorskip("nglview")
+    from orca_webui import working_directory
+
+    (tmp_path / "conformer_1.xyz").write_text(ETHANOL_XYZ)
+    (tmp_path / "static").mkdir()
+    monkeypatch.chdir(tmp_path)
+
+    html = working_directory.on_view_structure_file(str(tmp_path), "conformer_1.xyz")
+    assert html is not None
+
+    doc = (tmp_path / "static" / "structure.html").read_text()
+    for expected in ["C1", "C2", "O3", "H4", "H5", "H6", "H7", "H8", "H9"]:
+        assert f'"{expected}"' in doc, f"missing label {expected}"
+    # The per-element PDB naming that caused the bug must not be in use.
+    assert '"atomname"' not in doc
+
+
+def test_viewer_atom_order_matches_generated_input_file(tmp_path):
+    """The labels are only meaningful if they match the .inp coordinate block."""
+    pytest.importorskip("gradio")
+    from orca_webui import utils
+
+    structure = tmp_path / "conformer_1.xyz"
+    structure.write_text(ETHANOL_XYZ)
+    mol = utils.mol_from_structure_file(str(structure))
+
+    inp = tmp_path / "job"
+    utils.write_sp_orca_input(mol, str(inp), "DFT", "", functional="B3LYP", basis="3-21G")
+
+    block = (tmp_path / "job.inp").read_text().split("* xyz")[1].split("*")[0]
+    written = [line.split()[0] for line in block.strip().splitlines()[1:]]
+    labelled = [atom.GetSymbol() for atom in mol.GetAtoms()]
+
+    assert written == labelled == ["C", "C", "O", "H", "H", "H", "H", "H", "H"]
+
+
+def test_run_calculation_reports_nonzero_exit(tmp_path):
+    pytest.importorskip("gradio")
+    from orca_webui import calculation
+
+    (tmp_path / "run.inp").write_text("raise SystemExit(1)\n")
+
+    status, _files = calculation.on_run_calculation(str(tmp_path), "run.inp", sys.executable)
+
+    assert "color:red" in status
+    assert "exited with code 1" in status

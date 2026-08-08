@@ -16,8 +16,12 @@ import cclib
 from .utils import get_files_in_working_directory, generate_ir_spectrum_interactive, generate_absorption_emission_spectrum_interactive, parse_nmr_shielding_constants, parse_nmr_jcouplings, calculate_chemical_shifts, generate_nmr_spectrum_interactive, compute_hydrogen_equivalence, compute_carbon_equivalence, build_nmr_peak_table, multiplicity_label, parse_orca_geometry
 
 def on_working_directory_file_list_change(working_directory_file_list):
-    """Repopulate the result-file dropdown with the ``.log`` files in the directory."""
-    output_file_names = [f for f in working_directory_file_list if f.endswith('.log') ]
+    """Repopulate the result-file dropdown with the ``.log`` files in the directory.
+
+    The file-list state is ``None`` until a working directory is opened, so it is
+    normalised to an empty list here.
+    """
+    output_file_names = [f for f in (working_directory_file_list or []) if f.endswith('.log') ]
     return gr.update(choices=output_file_names, value=output_file_names[0] if len(output_file_names) > 0 else None, interactive=True)
 
 def _parse_reference(value, default):

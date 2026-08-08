@@ -17,16 +17,24 @@ import re
 from typing import TextIO
 
 from rdkit import Chem
+from rdkit.Chem import AllChem
 import numpy as np
 import plotly.graph_objects as go
 
 
 def get_files_in_working_directory(working_directory_path: str) -> list[str]:
-    """Return the file names in ``working_directory_path``.
+    """Return the file names in ``working_directory_path``, or ``[]`` if it is unset.
 
     Windows ``Zone.Identifier`` alternate-data-stream files (created when files are
     downloaded) are filtered out so they never appear in the UI file list.
+
+    The ``None`` guard matters: the shared path ``gr.State`` starts empty and is reset
+    to ``None`` when a directory fails to open, and ``os.listdir(None)`` quietly lists
+    the *current* directory instead of raising — which surfaced as callers building
+    paths out of a ``None`` directory.
     """
+    if not working_directory_path:
+        return []
     files = [f for f in os.listdir(working_directory_path) if not f.endswith('Zone.Identifier')]
     return files
 
@@ -211,6 +219,67 @@ def mol_from_orca_file(filename: str) -> Chem.Mol:
 
     # Convert RWMol to Mol before adding bonds
     mol = mol.GetMol()
+
+    return mol
+
+def mol_from_orca_geometry(logfile: str) -> Chem.Mol:
+    """Read the final ORCA geometry into a bond-free ``Mol`` in ORCA nucleus order.
+
+    :func:`mol_from_orca_file` goes through cclib, which *reorders* atoms; this builds
+    the molecule straight from the log's last ``CARTESIAN COORDINATES`` block instead
+    (via :func:`parse_orca_geometry`). Atom indices of the returned ``Mol`` are then
+    exactly the indices ORCA uses to number NMR nuclei, so they are safe to show to a
+    user who has to name nuclei (e.g. for spin-spin couplings). Like
+    :func:`mol_from_orca_file` the result has no bonds; pass it through
+    :func:`add_bonds` if connectivity is needed.
+    """
+    symbols, coords = parse_orca_geometry(logfile)
+
+    mol = Chem.RWMol()
+    for symbol in symbols:
+        mol.AddAtom(Chem.Atom(symbol.capitalize()))
+
+    conf = Chem.Conformer(len(symbols))
+    for i, (x, y, z) in enumerate(coords):
+        conf.SetAtomPosition(i, Chem.rdGeometry.Point3D(float(x), float(y), float(z)))
+    mol.AddConformer(conf)
+
+    return mol.GetMol()
+
+def mol_from_structure_file(file_path: str) -> Chem.Mol:
+    """Load any structure file the UI accepts into a sanitized ``Mol`` with a conformer.
+
+    Shared by the structure viewer and ORCA input generation so that both see the same
+    atoms in the same order. That ordering is load-bearing: the viewer labels each atom
+    with its index, and :func:`get_orca_coordinates` writes the ``* xyz`` block in that
+    same index order, so two different loaders here would make the on-screen labels
+    disagree with the generated input file.
+
+    ``.log`` files are read straight from the log's coordinate block via
+    :func:`mol_from_orca_geometry`; :func:`mol_from_orca_file` (cclib) *reorders* atoms
+    and is only used as a fallback when no coordinate block can be parsed.
+    """
+    if file_path.endswith('.pdb'):
+        mol = Chem.MolFromPDBFile(file_path, sanitize=False, removeHs=False)
+    elif file_path.endswith('.mol'):
+        mol = Chem.MolFromMolFile(file_path, sanitize=False, removeHs=False)
+    elif file_path.endswith('.mol2'):
+        mol = Chem.MolFromMol2File(file_path, sanitize=False, removeHs=False)
+    elif file_path.endswith('.xyz'):
+        mol = add_bonds(mol_from_xyz_file(file_path))
+    else:  # file_path.endswith('.log')
+        try:
+            mol = add_bonds(mol_from_orca_geometry(file_path))
+        except Exception:
+            mol = add_bonds(mol_from_orca_file(file_path))
+
+    Chem.SanitizeMol(mol)
+    # Display/write the file's REAL coordinates. Only embed a fresh conformer if the
+    # file somehow carried none — re-embedding otherwise would discard the parsed (e.g.
+    # ORCA-optimized) geometry and, because add_bonds perceives every bond as single,
+    # pucker planar/aromatic systems into a bogus sp3-looking shape.
+    if mol.GetNumConformers() == 0:
+        AllChem.EmbedMolecule(mol)
 
     return mol
 

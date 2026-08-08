@@ -11,10 +11,8 @@ import shutil
 import time
 import pandas as pd
 import gradio as gr
-from rdkit import Chem
-from rdkit.Chem import AllChem
 import nglview
-from .utils import get_files_in_working_directory, mol_from_xyz_file, mol_from_orca_file, add_bonds
+from .utils import get_files_in_working_directory, mol_from_structure_file
 
 def get_working_directories() -> list[str]:
     """List the existing working-directory names (immediate subfolders of ``data/``)."""
@@ -42,8 +40,13 @@ def on_file_list_change(working_directory_path) -> pd.DataFrame:
     """Build the file-browser DataFrame (File / Type / Modified) for the directory.
 
     Each file is classified by extension into a human-readable type, and rows are
-    ordered by actual modification time (newest first).
+    ordered by actual modification time (newest first). Yields an empty table when no
+    working directory is open, since this fires on the shared state's ``.change`` and
+    that state is ``None`` before the first directory is opened.
     """
+    if not working_directory_path:
+        return pd.DataFrame(columns=["File", "Type", "Modified"])
+
     files = get_files_in_working_directory(working_directory_path)
 
     # Update the file dataframe
@@ -149,33 +152,30 @@ def on_clean_working_directory(working_directory_path):
 def on_view_structure_file(working_directory_path, file_name):
     """Render a 3D viewer for the selected structure/output file.
 
-    Loads the geometry (XYZ/PDB/MOL/MOL2, or an ORCA ``.log`` via cclib), builds an
-    nglview widget, writes it to ``static/structure.html``, and returns an ``<iframe>``
-    (cache-busted with a timestamp) pointing at it. Returns ``None`` and warns on error.
+    Loads the geometry with :func:`mol_from_structure_file` — the same loader the
+    Calculation tab uses to build ORCA inputs, so the atom indices labelled here are the
+    indices of the generated ``.inp`` coordinate block. Builds an nglview widget, writes
+    it to ``static/structure.html``, and returns an ``<iframe>`` (cache-busted with a
+    timestamp) pointing at it. Returns ``None`` and warns on error.
     """
     try:
         file_path = os.path.join(working_directory_path, file_name)
-        if file_name.endswith('.pdb'):
-            mol = Chem.MolFromPDBFile(file_path, sanitize=False, removeHs=False)
-        elif file_name.endswith('.mol'):    
-            mol = Chem.MolFromMolFile(file_path, sanitize=False, removeHs=False)
-        elif file_name.endswith('.mol2'): 
-            mol = Chem.MolFromMol2File(file_path, sanitize=False, removeHs=False)
-        elif file_name.endswith('.xyz'):    
-            mol = add_bonds(mol_from_xyz_file(file_path))
-        else: # file_name.endswith('.log')
-            mol = add_bonds(mol_from_orca_file(file_path))
-
-        Chem.SanitizeMol(mol)
-        # Display the file's REAL coordinates. Only embed a fresh conformer if the file
-        # somehow carried none — re-embedding otherwise would discard the parsed (e.g.
-        # ORCA-optimized) geometry and, because add_bonds perceives every bond as single,
-        # pucker planar/aromatic systems into a bogus sp3-looking shape.
-        if mol.GetNumConformers() == 0:
-            AllChem.EmbedMolecule(mol)
+        mol = mol_from_structure_file(file_path)
 
         # Create the NGL view widget
         view = nglview.show_rdkit(mol)
+
+        # Label each atom with its position in the file / generated .inp coordinate
+        # block, 1-based, e.g. ethanol -> C1 C2 O3 H4..H9.
+        #
+        # labelType="text" with an explicit labelText is what makes this work.
+        # labelType="atomname" reads the names out of the PDB block that show_rdkit
+        # generates, and RDKit numbers those per element (C1, C2, O1, ...) -- so the
+        # third atom of ethanol came out as "O1", the first oxygen, rather than "O3".
+        # labelText takes one entry per atom of the selection, in atom order.
+        atom_labels = [f"{atom.GetSymbol()}{atom.GetIdx() + 1}" for atom in mol.GetAtoms()]
+        view.add_representation("label", labelType="text", labelText=atom_labels,
+                                color="black", showBackground=False)
 
         # Write the widget to HTML
         if os.path.exists('./static/structure.html'):
