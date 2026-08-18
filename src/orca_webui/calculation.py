@@ -73,11 +73,14 @@ def on_working_directory_file_list_change(working_directory_file_list, input_fil
     otherwise falls back to the first available input file. Returns updates for the
     structure dropdown and the input-file dropdown. The file-list state is ``None``
     until a working directory is opened, so it is normalised to an empty list here.
+
+    Both lists are sorted alphabetically (case-insensitively) rather than left in the
+    arbitrary order ``os.listdir`` returns.
     """
     working_directory_file_list = working_directory_file_list or []
     input_file_name = input_file_name or ""
-    structure_file_names = [f for f in working_directory_file_list if f.endswith('.xyz') or f.endswith('.pdb') or f.endswith('.mol') or f.endswith('.mol2') or f.endswith('.log')]
-    input_file_names = [f for f in working_directory_file_list if f.endswith('.inp')]
+    structure_file_names = sorted((f for f in working_directory_file_list if f.endswith('.xyz') or f.endswith('.pdb') or f.endswith('.mol') or f.endswith('.mol2') or f.endswith('.log')), key=str.lower)
+    input_file_names = sorted((f for f in working_directory_file_list if f.endswith('.inp')), key=str.lower)
     if input_file_name + ".inp" in input_file_names:
         input_file_name_value = input_file_name + ".inp"
     else:

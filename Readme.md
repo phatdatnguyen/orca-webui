@@ -120,11 +120,14 @@ accidental click cannot destroy earlier results.
 
 ### Reading atom indices off the structure viewer
 
-The structure viewer labels each atom with its element and its position in the file
-(`C1`, `C2`, `O3`, ...). That numbering is the order of the `* xyz` coordinate block in
-the generated `.inp`, so it can be used to identify specific nuclei — e.g. when choosing
-J-coupling partners. Note ORCA numbers nuclei from **0** in its output, so viewer label
-`O3` is ORCA's nucleus `2`.
+The structure viewer labels each atom with its element and its index (`C0`, `C1`, `O2`,
+...). The numbering is **0-based**, matching both the order of the `* xyz` coordinate
+block in the generated `.inp` and the nucleus indices ORCA reports in its output — so a
+label read off the viewer can be used directly to identify a nucleus.
+
+The **NMR signals** table in the Result tab uses the same labels in its *J-Couplings*
+column: a row for `H0` coupled to `H1` by 1 Hz reads `1.0000 Hz (H1)`, with multiple
+partners listed strongest-first.
 
 ## Development (from source)
 

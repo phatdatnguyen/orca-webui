@@ -958,6 +958,39 @@ def build_nmr_peak_table(shifts_data: list[tuple[int, str, float]], element_symb
     peaks.sort(key=lambda p: p['shift'])
     return peaks
 
+def format_jcouplings_by_atom(jcouplings: list[tuple[int, str, int, str, float]] | None,
+                              decimals: int = 4) -> dict[int, str]:
+    """Summarise each nucleus's J-couplings as a readable string, keyed by atom index.
+
+    Every coupling is listed from both partners' point of view, so a single ``H0-H1``
+    entry in the log produces text for H0 naming H1 *and* text for H1 naming H0::
+
+        {0: '1.0000 Hz (H1)', 1: '1.0000 Hz (H0)'}
+
+    Partners are written as element symbol + atom index using ORCA's own 0-based nucleus
+    numbering — the same numbering the structure viewer labels atoms with — so a value
+    read off this table can be matched to an atom on screen. Couplings are listed
+    strongest first; nuclei with no coupling are absent from the mapping.
+    """
+    by_atom: dict[int, list[tuple[float, str]]] = {}
+    seen_pairs = set()
+
+    for idx_a, elem_a, idx_b, elem_b, j_hz in jcouplings or []:
+        # A log that prints a pair from both directions must not double-list it.
+        pair = (min(idx_a, idx_b), max(idx_a, idx_b))
+        if idx_a == idx_b or pair in seen_pairs:
+            continue
+        seen_pairs.add(pair)
+        by_atom.setdefault(idx_a, []).append((j_hz, f'{elem_b}{idx_b}'))
+        by_atom.setdefault(idx_b, []).append((j_hz, f'{elem_a}{idx_a}'))
+
+    formatted = {}
+    for atom_idx, entries in by_atom.items():
+        entries.sort(key=lambda entry: -abs(entry[0]))
+        formatted[atom_idx] = ', '.join(
+            f'{j_hz:.{decimals}f} Hz ({partner})' for j_hz, partner in entries)
+    return formatted
+
 def multiplicity_label(couplings: list[dict]) -> str:
     """Human-readable multiplicity (s/d/t/q/...) for a peak's coupling list."""
     if not couplings:

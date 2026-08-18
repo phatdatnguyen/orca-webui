@@ -173,7 +173,7 @@ def on_view_structure_file(working_directory_path, file_name):
         # generates, and RDKit numbers those per element (C1, C2, O1, ...) -- so the
         # third atom of ethanol came out as "O1", the first oxygen, rather than "O3".
         # labelText takes one entry per atom of the selection, in atom order.
-        atom_labels = [f"{atom.GetSymbol()}{atom.GetIdx() + 1}" for atom in mol.GetAtoms()]
+        atom_labels = [f"{atom.GetSymbol()}{atom.GetIdx()}" for atom in mol.GetAtoms()]
         view.add_representation("label", labelType="text", labelText=atom_labels,
                                 color="black", showBackground=False)
 

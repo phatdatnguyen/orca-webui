@@ -74,3 +74,45 @@ def test_calculate_chemical_shifts_skips_unknown_element():
     refs = {"H": 32.0}
     shifts = utils.calculate_chemical_shifts(shielding, refs)
     assert shifts == [(1, "H", 2.0)]  # F skipped, no reference
+
+
+# --- format_jcouplings_by_atom: the NMR-signals "J-Couplings" column ---------
+
+def test_format_jcouplings_annotates_both_partners(tmp_path, nmr_log_text):
+    """One log entry couples two nuclei, so both rows must be annotated."""
+    log = tmp_path / "nmr.log"
+    log.write_text(nmr_log_text)
+    jc = utils.parse_nmr_jcouplings(str(log))
+
+    text = utils.format_jcouplings_by_atom(jc)
+
+    # The fixture couples C0-H1 (44.142 Hz) and H1-H2 (7.000 Hz).
+    assert text[0] == "44.1420 Hz (H1)"
+    assert text[2] == "7.0000 Hz (H1)"
+    # H1 has two partners, listed strongest first.
+    assert text[1] == "44.1420 Hz (C0), 7.0000 Hz (H2)"
+
+
+def test_format_jcouplings_matches_documented_format():
+    """H0 coupled to H1 by 1 Hz reads as "1.0000 Hz (H1)" on the H0 row."""
+    assert utils.format_jcouplings_by_atom([(0, "H", 1, "H", 1.0)]) == {
+        0: "1.0000 Hz (H1)",
+        1: "1.0000 Hz (H0)",
+    }
+
+
+def test_format_jcouplings_keeps_four_decimals():
+    """Four decimals preserve the precision ORCA prints for small couplings."""
+    assert utils.format_jcouplings_by_atom([(0, "H", 1, "H", 0.1234)])[0] == "0.1234 Hz (H1)"
+
+
+def test_format_jcouplings_deduplicates_mirrored_entries():
+    """A log printing a pair in both directions must not list it twice."""
+    both_ways = [(0, "H", 1, "H", 7.0), (1, "H", 0, "H", 7.0)]
+    assert utils.format_jcouplings_by_atom(both_ways)[0] == "7.0000 Hz (H1)"
+
+
+def test_format_jcouplings_handles_absent_couplings():
+    """A calculation run without spin-spin couplings leaves the column blank."""
+    assert utils.format_jcouplings_by_atom([]) == {}
+    assert utils.format_jcouplings_by_atom(None) == {}

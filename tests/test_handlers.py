@@ -104,6 +104,44 @@ def test_file_list_handlers_tolerate_no_working_directory():
     assert result.on_working_directory_file_list_change(None)["choices"] == []
 
 
+# --- file dropdowns are sorted alphabetically -------------------------------
+# os.listdir returns an arbitrary order, so the lists are sorted before display.
+
+def test_file_dropdowns_sorted_alphabetically():
+    pytest.importorskip("gradio")
+    from orca_webui import calculation, result
+
+    unsorted_files = [
+        "zinc.xyz", "Benzene.pdb", "alpha.mol", "opt.log",
+        "run_b.inp", "Run_a.inp", "acetone.log",
+    ]
+
+    structures, inputs = calculation.on_working_directory_file_list_change(
+        unsorted_files, "")
+    assert structures["choices"] == [
+        "acetone.log", "alpha.mol", "Benzene.pdb", "opt.log", "zinc.xyz"]
+    # Case-insensitive: "Run_a.inp" must not sort ahead of every lowercase name.
+    assert inputs["choices"] == ["Run_a.inp", "run_b.inp"]
+    # The pre-selected value is the first entry of the sorted list.
+    assert structures["value"] == "acetone.log"
+    assert inputs["value"] == "Run_a.inp"
+
+    results = result.on_working_directory_file_list_change(unsorted_files)
+    assert results["choices"] == ["acetone.log", "opt.log"]
+    assert results["value"] == "acetone.log"
+
+
+def test_input_file_selection_survives_sorting():
+    """A name typed in the file-name box still wins over the alphabetical first."""
+    pytest.importorskip("gradio")
+    from orca_webui import calculation
+
+    _structures, inputs = calculation.on_working_directory_file_list_change(
+        ["zzz.inp", "aaa.inp"], "zzz")
+    assert inputs["choices"] == ["aaa.inp", "zzz.inp"]
+    assert inputs["value"] == "zzz.inp"
+
+
 # --- calculation.on_run_calculation: the .log is not clobbered --------------
 # sys.executable stands in for the ORCA binary: the handler runs "<exe> <input file>",
 # so an .inp holding valid Python runs and exits 0 on any platform.
@@ -170,7 +208,8 @@ def test_structure_viewer_labels_atoms_by_file_position(tmp_path, monkeypatch):
 
     NGL's "atomname" labels come from the PDB block nglview generates, and RDKit
     numbers those per element -- which rendered ethanol's third atom as "O1" (the first
-    oxygen) instead of "O3" (the third coordinate line of the generated .inp).
+    oxygen) instead of "O2" (the third coordinate line of the generated .inp).
+    Numbering is 0-based to match ORCA's own nucleus indices.
     """
     pytest.importorskip("gradio")
     pytest.importorskip("nglview")
@@ -184,7 +223,7 @@ def test_structure_viewer_labels_atoms_by_file_position(tmp_path, monkeypatch):
     assert html is not None
 
     doc = (tmp_path / "static" / "structure.html").read_text()
-    for expected in ["C1", "C2", "O3", "H4", "H5", "H6", "H7", "H8", "H9"]:
+    for expected in ["C0", "C1", "O2", "H3", "H4", "H5", "H6", "H7", "H8"]:
         assert f'"{expected}"' in doc, f"missing label {expected}"
     # The per-element PDB naming that caused the bug must not be in use.
     assert '"atomname"' not in doc

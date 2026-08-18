@@ -13,15 +13,16 @@ import matplotlib.pyplot as plt
 from matplotlib.ticker import ScalarFormatter
 import gradio as gr
 import cclib
-from .utils import get_files_in_working_directory, generate_ir_spectrum_interactive, generate_absorption_emission_spectrum_interactive, parse_nmr_shielding_constants, parse_nmr_jcouplings, calculate_chemical_shifts, generate_nmr_spectrum_interactive, compute_hydrogen_equivalence, compute_carbon_equivalence, build_nmr_peak_table, multiplicity_label, parse_orca_geometry
+from .utils import get_files_in_working_directory, generate_ir_spectrum_interactive, generate_absorption_emission_spectrum_interactive, parse_nmr_shielding_constants, parse_nmr_jcouplings, calculate_chemical_shifts, generate_nmr_spectrum_interactive, compute_hydrogen_equivalence, compute_carbon_equivalence, build_nmr_peak_table, multiplicity_label, format_jcouplings_by_atom, parse_orca_geometry
 
 def on_working_directory_file_list_change(working_directory_file_list):
     """Repopulate the result-file dropdown with the ``.log`` files in the directory.
 
     The file-list state is ``None`` until a working directory is opened, so it is
-    normalised to an empty list here.
+    normalised to an empty list here. Names are sorted alphabetically
+    (case-insensitively) rather than left in ``os.listdir`` order.
     """
-    output_file_names = [f for f in (working_directory_file_list or []) if f.endswith('.log') ]
+    output_file_names = sorted((f for f in (working_directory_file_list or []) if f.endswith('.log')), key=str.lower)
     return gr.update(choices=output_file_names, value=output_file_names[0] if len(output_file_names) > 0 else None, interactive=True)
 
 def _parse_reference(value, default):
@@ -174,20 +175,23 @@ def on_load_result_file(working_directory_path, calculation_result_file_name, h_
             element_symbols = []
             shielding_constants = []
             chemical_shifts = []
+            jcoupling_texts = []
 
             shielding_dict = {(atom_idx, element): shielding for atom_idx, element, shielding in shielding_data}
+            # Per-nucleus coupling text, e.g. {0: '7.0 Hz (H1), 1.2 Hz (H4)'}. Partners
+            # are named with the same element+index labels the structure viewer shows.
+            jcoupling_by_atom = format_jcouplings_by_atom(jcoupling_data)
 
             for atom_idx, element, shift in shifts_data:
                 key = (atom_idx, element)
                 shielding = shielding_dict.get(key, None)
+                atom_indices.append(atom_idx)
+                element_symbols.append(element)
+                jcoupling_texts.append(jcoupling_by_atom.get(atom_idx, ""))
                 if shielding is not None:
-                    atom_indices.append(atom_idx)
-                    element_symbols.append(element)
                     shielding_constants.append('{:.4f}'.format(shielding))
                     chemical_shifts.append('{:.4f}'.format(shift))
                 else:
-                    atom_indices.append(atom_idx)
-                    element_symbols.append(element)
                     shielding_constants.append("")
                     chemical_shifts.append("")
 
@@ -195,7 +199,8 @@ def on_load_result_file(working_directory_path, calculation_result_file_name, h_
                 'Index': atom_indices,
                 'Symbol': element_symbols,
                 'Shielding (ppm)': shielding_constants,
-                'Chemical Shift (ppm, ref: TMS)': chemical_shifts
+                'Chemical Shift (ppm, ref: TMS)': chemical_shifts,
+                'J-Couplings': jcoupling_texts
             })
 
             # Generate 1H NMR spectrum (equivalent H averaged into single peaks).
