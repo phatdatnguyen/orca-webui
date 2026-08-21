@@ -10,6 +10,7 @@ formats documented in those functions). They are hand-written on purpose: the re
 outputs under data/ are gitignored and must not be relied on as test fixtures.
 """
 import os
+import shutil
 import sys
 
 import pytest
@@ -17,6 +18,34 @@ from rdkit import Chem
 from rdkit.Chem import AllChem
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
+
+
+def find_orca_executable():
+    """Locate a real ORCA binary, or return ``None``.
+
+    ``ORCA_EXECUTABLE`` takes precedence so the integration tests can be pointed at an
+    install that is not on ``PATH`` (ORCA is commonly unpacked somewhere like
+    ``~/orca/orca_6_1_1/`` and only added to ``PATH`` by an interactive shell profile,
+    which pytest does not read).
+    """
+    from_env = os.environ.get("ORCA_EXECUTABLE", "").strip()
+    if from_env:
+        return from_env if os.path.isfile(from_env) else None
+    return shutil.which("orca")
+
+
+@pytest.fixture(scope="session")
+def orca_executable():
+    """Absolute path to a real ORCA binary; skips the test when none is installed.
+
+    ORCA refuses to start a parallel run unless invoked by full pathname, and it also
+    locates its own sub-executables (orca_scf, orca_prop, ...) relative to that path, so
+    the absolute path is what gets handed to the app under test.
+    """
+    exe = find_orca_executable()
+    if not exe:
+        pytest.skip("ORCA not found; set ORCA_EXECUTABLE or put 'orca' on PATH")
+    return os.path.abspath(exe)
 
 
 @pytest.fixture

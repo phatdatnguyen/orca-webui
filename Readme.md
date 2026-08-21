@@ -151,10 +151,34 @@ orca-webui
 pytest
 ```
 
+### Tests
+
+Most of the suite is self-contained: it parses hand-written ORCA log text and swaps a
+stand-in for the ORCA executable, so it runs anywhere in a second or two.
+
+`tests/test_orca_integration.py` additionally drives the **real** ORCA binary — it
+generates an input with the app's writers, runs it, and parses the output with the app's
+parsers, which is the only way to catch ORCA rejecting an input we generate or changing
+an output format we scrape. Those tests are marked `orca` and **skip automatically when
+ORCA is not installed**:
+
+```
+pytest                                          # skips the ORCA tests if it can't find orca
+ORCA_EXECUTABLE=~/orca/orca_6_1_1/orca pytest   # ORCA installed but not on PATH
+pytest -m "not orca"                            # skip them explicitly
+```
+
+They use H2 and methane at HF/STO-3G with `nprocs 1`, so the whole file runs in ~2 s and
+needs no MPI.
+
+### Editable installs
+
 The `-e` (editable) flag is the important part: pip records a path hook pointing at
 `src/`, so your edits are picked up on the next restart and you never reinstall. A plain
 `pip install .` *copies* the package into `site-packages`, which is why changes appear to
-be ignored until you reinstall. To check which one you have:
+be ignored until you reinstall. Note that `pip install --upgrade orca-webui` (e.g. to
+check a published release) also replaces the editable link with a copy — use a throwaway
+venv for that. To check which one you have:
 
 ```
 pip show orca-webui | grep -i location   # editable installs report the repo's src/ path
