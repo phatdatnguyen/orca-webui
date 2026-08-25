@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 from matplotlib.ticker import ScalarFormatter
 import gradio as gr
 import cclib
-from .utils import get_files_in_working_directory, generate_ir_spectrum_interactive, generate_absorption_emission_spectrum_interactive, parse_nmr_shielding_constants, parse_nmr_jcouplings, calculate_chemical_shifts, generate_nmr_spectrum_interactive, compute_hydrogen_equivalence, compute_carbon_equivalence, build_nmr_peak_table, multiplicity_label, format_jcouplings_by_atom, parse_orca_geometry
+from .utils import get_files_in_working_directory, generate_ir_spectrum_interactive, generate_absorption_emission_spectrum_interactive, generate_ecd_spectrum_interactive, parse_nmr_shielding_constants, parse_nmr_jcouplings, calculate_chemical_shifts, generate_nmr_spectrum_interactive, compute_hydrogen_equivalence, compute_carbon_equivalence, build_nmr_peak_table, multiplicity_label, format_jcouplings_by_atom, parse_orca_geometry
 
 def on_working_directory_file_list_change(working_directory_file_list):
     """Repopulate the result-file dropdown with the ``.log`` files in the directory.
@@ -133,6 +133,11 @@ def on_load_result_file(working_directory_path, calculation_result_file_name, h_
             show_absorption_emission = True
         else:
             show_absorption_emission = False
+
+        # ECD needs rotatory strengths. ORCA 6.1 reports these for any TD-DFT run
+        # (its CD SPECTRUM blocks) without being asked, so this is true for ordinary
+        # TD-DFT logs too -- including ones produced before ECD support existed.
+        show_ecd = hasattr(data, 'etenergies') and hasattr(data, 'etrotats')
 
         # Display NMR result
         show_nmr = False
@@ -268,7 +273,7 @@ def on_load_result_file(working_directory_path, calculation_result_file_name, h_
                gr.update(visible=show_enery_result), energy_text, dipole_moment_text, MO_df, \
                gr.update(visible=show_geometry_optimization), energy_plot, \
                gr.update(visible=show_frequency), ir_df, ir_spectrum, thero_df, gr.update(interactive=show_frequency), \
-               gr.update(visible=show_absorption_emission), None, None, gr.update(interactive=show_absorption_emission), \
+               gr.update(visible=show_absorption_emission or show_ecd), None, None, gr.update(interactive=show_absorption_emission or show_ecd), gr.update(interactive=show_ecd), \
                gr.update(visible=show_nmr), nmr_df, gr.update(value=nmr_multiplet_df, visible=show_averaged_tables), nmr_spectrum_1H, nmr_spectrum_13C, gr.update(value=nmr_multiplet_13C_df, visible=show_averaged_tables), gr.update(interactive=show_nmr)
     except Exception as exc:
         status = f"Error loading result file: {exc}"
@@ -276,7 +281,7 @@ def on_load_result_file(working_directory_path, calculation_result_file_name, h_
                gr.update(visible=False), "", "", None, \
                gr.update(visible=False), None, \
                gr.update(visible=False), None, None, None, gr.update(interactive=False), \
-               gr.update(visible=False), None, None, gr.update(interactive=False), \
+               gr.update(visible=False), None, None, gr.update(interactive=False), gr.update(interactive=False), \
                gr.update(visible=False), None, None, None, None, None, gr.update(interactive=False)
 
 def on_show_absorption_spectrum(data):
@@ -320,6 +325,50 @@ def on_show_absorption_spectrum(data):
         return peak_df, absorption_spectrum
     else:
         return None, None
+
+def on_show_ecd_spectrum(data):
+    """Build the ECD peak table + spectrum from a parsed TD-DFT result.
+
+    Reads ``etrotats`` — the rotatory strengths cclib takes from ORCA's *CD SPECTRUM VIA
+    TRANSITION ELECTRIC DIPOLE MOMENTS* block, which ORCA 6.1 emits for any TD-DFT run.
+    Returns ``(peak_dataframe, spectrum_figure)``, or ``(None, None)`` when the result
+    has no rotatory strengths.
+    """
+    if not (hasattr(data, 'etenergies') and hasattr(data, 'etrotats')):
+        return None, None
+
+    # etenergies in cm^(-1); etrotats are signed rotatory strengths in 1e-40 cgs.
+    energies_wavenumber = np.array(data.etenergies)
+    rotatory_strengths = np.array(data.etrotats)
+    wavelengths = 1e7 / energies_wavenumber
+
+    # Start the axis above 0 nm: the spectrum is broadened in wavenumber space, and
+    # 1e7/0 is not a usable grid point.
+    ecd_spectrum = generate_ecd_spectrum_interactive(
+        wavelengths=wavelengths, rotatory_strengths=rotatory_strengths,
+        points=10000, plot_range=(100, 800))
+
+    configurations_str_list = []
+    for configurations in data.etsecs:
+        transitions_str_list = []
+        for transition_begin, transition_end, coefficient in configurations:
+            transitions_str_list.append(f"{transition_begin[0]} -> {transition_end[0]} (coefficient: {coefficient:.4f})")
+        configurations_str_list.append("\n".join(transitions_str_list))
+
+    # Oscillator strengths come from the same run, so show them alongside: a large |R|
+    # on a transition with negligible f is not an observable ECD band.
+    oscs = np.array(data.etoscs) if hasattr(data, 'etoscs') else np.full(len(wavelengths), np.nan)
+
+    peak_df = pd.DataFrame({
+        "Wavelength (nm)": np.round(wavelengths, 4),
+        "Rotatory Strength (1e-40 cgs)": np.round(rotatory_strengths, 5),
+        "Oscillator Strength": oscs,
+        "Transitions": configurations_str_list,
+        "Symmetry": [symmetry for symmetry in data.etsyms]
+    })
+    peak_df = peak_df.sort_values("Wavelength (nm)").reset_index(drop=True)
+
+    return peak_df, ecd_spectrum
 
 def on_show_emission_spectrum(data):
     """Build the emission peak table + spectrum (Kasha's rule: S1 -> S0 only).
@@ -411,17 +460,19 @@ def result_tab_content(working_directory_path_state, working_directory_file_list
                     ir_spectrum_plot = gr.Plot(label="IR spectrum")
             with gr.Row():
                 thermo_dataframe = gr.Dataframe(label="Thermodynamics") 
-        with gr.Accordion(label="Absorption/Emission Spectrum", visible=False) as absorption_emission_result_accordion:
+        with gr.Accordion(label="Absorption/Emission/ECD Spectrum", visible=False) as absorption_emission_result_accordion:
             with gr.Row():
                 with gr.Column(scale=1):
                     absorption_spectrum_button = gr.Button("Show absorption spectrum")
                     emission_spectrum_button = gr.Button("Show emission spectrum")
+                    # Only clickable once a loaded result actually carries rotatory strengths.
+                    ecd_spectrum_button = gr.Button("Show ECD spectrum", interactive=False)
                 with gr.Column(scale=2):
-                    peak_dataframe = gr.Dataframe(label="Absorption Peaks", headers=["Wavelength (nm)", "Oscillator Strength"], datatype=["number", "number", "markdown", "markdown"], line_breaks=True, wrap=True)
+                    peak_dataframe = gr.Dataframe(label="Peaks data", headers=["Wavelength (nm)", "Oscillator Strength"], datatype=["number", "number", "markdown", "markdown"], line_breaks=True, wrap=True)
                     peak_filename_textbox = gr.Textbox(label="File name", value="peak_data")
                     export_peak_button = gr.Button(value="Export", interactive=False)
             with gr.Row():
-                absorption_emisson_spectrum_plot = gr.Plot(label="UV-Vis Spectrum")
+                absorption_emisson_spectrum_plot = gr.Plot(label="Spectrum")
         with gr.Accordion(label="NMR", visible=False) as nmr_result_accordion:
             with gr.Row():
                 with gr.Column(scale=1):
@@ -449,7 +500,7 @@ def result_tab_content(working_directory_path_state, working_directory_file_list
                           energy_result_accordion, energy_texbox, dipole_moment_texbox, mo_dataframe,
                           opt_result_accordion, energy_plot,
                           frequency_result_accordion, ir_dataframe, ir_spectrum_plot, thermo_dataframe, export_ir_button,
-                          absorption_emission_result_accordion, peak_dataframe, absorption_emisson_spectrum_plot, export_peak_button,
+                          absorption_emission_result_accordion, peak_dataframe, absorption_emisson_spectrum_plot, export_peak_button, ecd_spectrum_button,
                           nmr_result_accordion, nmr_dataframe, nmr_multiplet_dataframe, nmr_spectrum_1H, nmr_spectrum_13C, nmr_multiplet_13C_dataframe, export_nmr_button]
     load_button.click(on_load_result_file,
                       [working_directory_path_state, calculation_result_file_dropdown, h_reference_textbox, c_reference_textbox, show_equivalent_checkbox],
@@ -461,6 +512,7 @@ def result_tab_content(working_directory_path_state, working_directory_file_list
     absorption_spectrum_button.click(on_show_absorption_spectrum, data_state, [peak_dataframe, absorption_emisson_spectrum_plot])
     export_peak_button.click(on_export_data, [working_directory_path_state, peak_filename_textbox, peak_dataframe], [status_markdown, working_directory_file_list_state])
     emission_spectrum_button.click(on_show_emission_spectrum, data_state, [peak_dataframe, absorption_emisson_spectrum_plot])
+    ecd_spectrum_button.click(on_show_ecd_spectrum, data_state, [peak_dataframe, absorption_emisson_spectrum_plot])
     export_nmr_button.click(on_export_data, [working_directory_path_state, nmr_filename_textbox, nmr_dataframe], [status_markdown, working_directory_file_list_state])
 
     return result_tab

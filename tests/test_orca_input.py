@@ -63,6 +63,21 @@ def test_header_tddft_block():
     assert "iroot 2" in text
 
 
+def test_header_omits_iroot_for_a_single_point():
+    """iroot selects which state's gradient to follow, so it is Opt-only.
+
+    Writing it for a single-point TD-DFT would be noise; ORCA needs it only when a
+    geometry is being optimized.
+    """
+    buf = io.StringIO()
+    utils.get_orca_header(buf, n_proc=1, memory=1, solvation=False,
+                          solvation_model=None, solvent=None,
+                          tddft=True, n_states=5, maxdim=5)
+    text = buf.getvalue()
+    assert "nroots 5" in text
+    assert "iroot" not in text
+
+
 def test_header_omits_maxcore_when_memory_none():
     buf = io.StringIO()
     utils.get_orca_header(buf, n_proc=1, memory=None, solvation=False,
@@ -119,14 +134,47 @@ def test_write_opt_freq_input(tmp_path, water_mol):
     assert _read(base + ".inp").startswith("! PBE def2-SVP Opt Freq")
 
 
-def test_write_tddft_input(tmp_path, water_mol):
+def test_write_tddft_input_is_a_single_point(tmp_path, water_mol):
+    """TD-DFT must not optimize: the spectrum belongs to the geometry it was given.
+
+    The old writer appended Opt, which (with iroot 0) ORCA turned into a no-op
+    optimization that still cost a full extra pass, and which made ORCA reject
+    B88-containing functionals such as B3LYP outright.
+    """
     base = str(tmp_path / "td")
     utils.write_tddft_orca_input(water_mol, base, "DFT", "", functional="PBE0",
-                                 basis="def2-SVP", n_states=8, maxdim=4, root=1,
+                                 basis="def2-SVP", n_states=8, maxdim=4,
                                  n_proc=1, memory=1)
     text = _read(base + ".inp")
-    assert text.startswith("! PBE0 def2-SVP RIJCOSX TightSCF Opt")
-    assert "nroots 8" in text and "iroot 1" in text
+    assert text.startswith("! PBE0 def2-SVP RIJCOSX TightSCF")
+    # The method line must carry no Opt (and no Freq).
+    assert "Opt" not in text.splitlines()[0]
+    assert "nroots 8" in text and "maxdim 4" in text
+    assert "iroot" not in text
+
+
+
+def test_write_opt_input_ground_state_has_no_tddft_block(tmp_path, water_mol):
+    base = str(tmp_path / "opt")
+    utils.write_opt_orca_input(water_mol, base, "DFT", "", functional="PBE",
+                               basis="def2-SVP", n_proc=1, memory=1)
+    text = _read(base + ".inp")
+    assert text.startswith("! PBE def2-SVP Opt")
+    assert "%tddft" not in text
+
+
+def test_write_opt_input_excited_state_follows_the_root(tmp_path, water_mol):
+    """Excited-state optimization is what gives the geometry emission is measured at."""
+    base = str(tmp_path / "opt_es")
+    utils.write_opt_orca_input(water_mol, base, "DFT", "", functional="PBE",
+                               basis="def2-SVP", n_proc=1, memory=1,
+                               excited_state=True, n_states=5, maxdim=5, root=1)
+    text = _read(base + ".inp")
+    assert text.startswith("! PBE def2-SVP Opt")
+    assert "%tddft" in text
+    assert "nroots 5" in text
+    # iroot 0 would optimize the ground state, making the excited-state option a no-op.
+    assert "iroot 1" in text
 
 
 def test_write_nmr_input_without_coupling(tmp_path, water_mol):

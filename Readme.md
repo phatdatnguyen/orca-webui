@@ -5,11 +5,13 @@ This web UI is for simple computational chemistry calculations with [ORCA](https
 
 * Single-Point Calculation
 
-* Geometry Optimization
+* Geometry Optimization (ground state or a chosen excited state)
 
 * Frequency Analysis
 
 * Absorption/Emission Spectrum Prediction
+
+* ECD (Electronic Circular Dichroism) Spectrum Prediction
 
 * NMR Prediction
 
@@ -117,6 +119,49 @@ The **Settings** accordion on the Calculation tab controls how ORCA is invoked:
 early, killing ORCA's MPI workers along with the launcher. If a `.log` from a previous
 run already exists it is renamed to `.log.bak` before the new run starts, so an
 accidental click cannot destroy earlier results.
+
+### Optimization and spectra are separate steps
+
+**TD-DFT is a single point.** It computes excitation energies, oscillator strengths and
+rotatory strengths at exactly the geometry you select — it does not optimize. Do the
+optimization first with **Geometry Optimization**, then select the resulting `.log` as
+the input structure for the TD-DFT step.
+
+**Geometry Optimization** has an *Optimize* choice:
+
+* **Ground state** — an ordinary optimization.
+* **Excited state** — adds a `%tddft` block with `iroot N`, so ORCA follows the gradient
+  of excited state *N* and returns that state's relaxed geometry.
+
+Which one you want depends on the spectrum:
+
+| Spectrum | Geometry to run TD-DFT on |
+| --- | --- |
+| Absorption, ECD | ground-state optimized |
+| Emission (fluorescence) | excited-state optimized (`iroot 1` for S1) |
+
+Emission happens *after* the excited state relaxes, so a TD-DFT single point on a
+ground-state geometry gives a vertical excitation — the same number as the first
+absorption band, with no Stokes shift. Optimize the excited state first, then load that
+`.log` in the Result tab and press **Show emission spectrum**.
+
+> **Note:** an excited-state optimization needs the third derivative of the
+> exchange-correlation functional, which ORCA 6.1 does not provide natively for every
+> functional. `B3LYP` and `wB97X-D4` abort with *"Invalid or unknown value for Exchange
+> in DFT GXC. Please try using LibXC instead!"*, while `PBE` works. This limit is ORCA's,
+> not the UI's, and it only affects excited-state optimization — ground-state
+> optimization and TD-DFT single points work with any functional.
+
+### ECD spectra
+
+Any TD-DFT result offers **Show ECD spectrum** in the Result tab: ORCA 6.1 reports
+rotatory strengths (its *CD SPECTRUM* blocks) for TD-DFT automatically, so no extra
+keyword is needed and existing TD-DFT logs work too. The spectrum broadens the *signed*
+rotatory strengths, so positive and negative Cotton effects appear above and below zero.
+Broadening is done in wavenumber space and only displayed against wavelength.
+
+Two enantiomers differ only by the sign of every rotatory strength, so their ECD spectra
+are mirror images. One calculation therefore characterizes both.
 
 ### Reading atom indices off the structure viewer
 

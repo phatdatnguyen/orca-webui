@@ -54,6 +54,11 @@ _BASIS_SETS_ECP = ["LanL2DZ", "SDD"]
 BASIS_SETS = _BASIS_SETS_GENERAL + _BASIS_SETS_ECP
 NMR_BASIS_SETS = _BASIS_SETS_GENERAL + _BASIS_SETS_NMR + _BASIS_SETS_ECP
 DEFAULT_BASIS_SET = "3-21G"
+# Labels for the Geometry Optimization target. Excited-state optimization adds a
+# %tddft block with iroot >= 1 so ORCA follows that state's gradient; it is what gives
+# the relaxed excited-state geometry an emission spectrum must be computed at.
+GROUND_STATE = "Ground state"
+EXCITED_STATE = "Excited state"
 # ORCA refuses to start a parallel run unless it is invoked by full pathname, so the
 # binary is looked up on PATH at import time and offered as an editable default in the
 # Settings accordion (empty when ORCA is not installed / not on PATH).
@@ -89,13 +94,18 @@ def on_working_directory_file_list_change(working_directory_file_list, input_fil
     return gr.update(choices=structure_file_names, value=structure_file_names[0] if len(structure_file_names) > 0 else None, interactive=True), \
            gr.update(choices=input_file_names, value=input_file_name_value, interactive=True)
    
-def on_change_calculation_type(calculation_type, basis_set):
+def on_change_calculation_type(calculation_type, basis_set, optimize_target):
     """React to the calculation-type radio changing.
 
     Suggests a default input file name, restricts the available method types (NMR
     excludes semi-empirical/CC), swaps the functional list for TD-DFT, offers the
-    NMR-only pcSseg basis sets for NMR, and toggles visibility of the TD-DFT sliders
-    and the NMR spin-spin-coupling checkbox.
+    NMR-only pcSseg basis sets for NMR, and toggles visibility of the excited-state
+    controls and the NMR spin-spin-coupling checkbox.
+
+    The state controls are shared by two calculation types: TD-DFT needs the number of
+    roots and the expansion space, and so does an excited-state geometry optimization,
+    which additionally needs ``iroot``. Visibility therefore depends on the current
+    ``optimize_target`` as well as the calculation type.
     """
     if calculation_type == "Single-Point":
         file_name = "single_point"
@@ -124,11 +134,39 @@ def on_change_calculation_type(calculation_type, basis_set):
     # default whenever the current choice is no longer on offer.
     basis_set_value = basis_set if basis_set in basis_sets else DEFAULT_BASIS_SET
 
-    show_tddft = calculation_type == "Time-Dependent Density Functional Theory"
+    show_optimize_target = calculation_type == "Geometry Optimization"
+    show_states, show_root = _excited_state_control_visibility(calculation_type, optimize_target)
 
     show_spin_spin_couplings = (calculation_type == "NMR Spectrum")
 
-    return file_name, gr.update(choices=method_types, value="DFT"), functional_dropdown, gr.update(choices=basis_sets, value=basis_set_value), gr.update(visible=show_tddft), gr.update(visible=show_tddft), gr.update(visible=show_tddft), gr.update(visible=show_spin_spin_couplings)
+    return file_name, gr.update(choices=method_types, value="DFT"), functional_dropdown, gr.update(choices=basis_sets, value=basis_set_value), gr.update(visible=show_optimize_target), gr.update(visible=show_states), gr.update(visible=show_states), gr.update(visible=show_root), gr.update(visible=show_spin_spin_couplings)
+
+def _excited_state_control_visibility(calculation_type, optimize_target):
+    """Return ``(show_states, show_root)`` for the excited-state controls.
+
+    ``nroots``/``maxdim`` are needed by a TD-DFT spectrum and by an excited-state
+    optimization; ``iroot`` only by the latter, since it selects which state's gradient
+    to follow and has no effect on a single point.
+    """
+    is_tddft = calculation_type == "Time-Dependent Density Functional Theory"
+    excited_opt = (calculation_type == "Geometry Optimization"
+                   and optimize_target == EXCITED_STATE)
+    return (is_tddft or excited_opt), excited_opt
+
+def on_n_states_change(n_states, root):
+    """Keep ``iroot`` within the roots the calculation actually solves for.
+
+    Optimizing excited state N requires TD-DFT to have produced at least N roots, so the
+    root ceiling follows the number of excited states; a larger value would ask ORCA to
+    follow a state it never computed.
+    """
+    n_states = max(1, int(n_states))
+    return gr.update(maximum=n_states, value=min(int(root), n_states))
+
+def on_optimize_target_change(calculation_type, optimize_target):
+    """Show the excited-state controls when optimizing an excited state."""
+    show_states, show_root = _excited_state_control_visibility(calculation_type, optimize_target)
+    return gr.update(visible=show_states), gr.update(visible=show_states), gr.update(visible=show_root)
 
 def on_mm_checkbox_change(mm_checkbox: gr.Checkbox):
     """Show/hide the force-field and max-iterations controls with the MM checkbox."""
@@ -158,6 +196,7 @@ def on_method_type_change(method_type):
     return gr.update(choices=method_names, value=default_method_name, visible=show_method_name), gr.update(visible=show_functional), gr.update(visible=show_basis_set)
 
 def on_generate_input_file(working_directory_path, input_structure_file_dropdown, calculation_type,
+                           optimize_target,
                            use_mm, force_field, max_iters,
                            use_solvation, solvation_model, solvent,
                            method_type, method_name, functional, basis_set_textbox, n_states, maxdim, root, spin_spin_coupling, charge, multiplicity,
@@ -195,14 +234,16 @@ def on_generate_input_file(working_directory_path, input_structure_file_dropdown
         elif calculation_type == "Geometry Optimization":
             write_opt_orca_input(mol, input_file_path, method_type, method_name, functional=functional, basis=basis_set_textbox,
                                  charge=charge, multiplicity=multiplicity,
-                                 solvation=use_solvation, solvation_model=solvation_model, solvent=solvent, n_proc=n_cores, memory=memory)
+                                 solvation=use_solvation, solvation_model=solvation_model, solvent=solvent, n_proc=n_cores, memory=memory,
+                                 excited_state=(optimize_target == EXCITED_STATE),
+                                 n_states=n_states, maxdim=maxdim, root=root)
         elif calculation_type == "Frequency":
             write_opt_freq_orca_input(mol, input_file_path, method_type, method_name, functional=functional, basis=basis_set_textbox,
                                       charge=charge, multiplicity=multiplicity,
                                       solvation=use_solvation, solvation_model=solvation_model, solvent=solvent, n_proc=n_cores, memory=memory)
         elif calculation_type == "Time-Dependent Density Functional Theory":
             write_tddft_orca_input(mol, input_file_path, method_type, method_name, functional=functional, basis=basis_set_textbox,
-                                     n_states=n_states, maxdim=maxdim, root=root, charge=charge, multiplicity=multiplicity,
+                                     n_states=n_states, maxdim=maxdim, charge=charge, multiplicity=multiplicity,
                                      solvation=use_solvation, solvation_model=solvation_model, solvent=solvent, n_proc=n_cores, memory=memory)
         else: # calculation_type == "NMR Spectrum"
             write_nmr_orca_input(mol, input_file_path, method_type, functional=functional, basis=basis_set_textbox,
@@ -399,6 +440,9 @@ def calculation_tab_content(working_directory_path_state, working_directory_file
                         with gr.Column(scale=1):
                             max_iters_slider = gr.Slider(label="Max iterations", value=200, minimum=0, maximum=1000, step=1, visible=False)
                     with gr.Row():
+                        optimize_target_radio = gr.Radio(label="Optimize", value=GROUND_STATE, choices=[GROUND_STATE, EXCITED_STATE], visible=False,
+                                                         info="An excited-state optimization needs the XC third derivative, which ORCA 6.1 lacks natively for some functionals (B3LYP, wB97X-D4); PBE works.")
+                    with gr.Row():
                         solvation_checkbox = gr.Checkbox(label="Solvation", value=False)
                     with gr.Row():
                         with gr.Column(scale=1):
@@ -416,8 +460,10 @@ def calculation_tab_content(working_directory_path_state, working_directory_file
                         basis_set_dropdown = gr.Dropdown(label="Basis set", value=DEFAULT_BASIS_SET, choices=BASIS_SETS, allow_custom_value=True)
                     with gr.Row():
                         n_states_slider = gr.Slider(label="Number of excited states", value=10, minimum=5, maximum=100, step=1, visible=False)
+                        # maximum tracks n_states: see on_n_states_change.
                         maxdim_slider = gr.Slider(label="Dimension of expansion space", value=5, minimum=1, maximum=10, step=1, visible=False)
-                        root_slider = gr.Slider(label="Root state", value=0, minimum=0, maximum=99, step=1, visible=False)
+                        # iroot 0 is the ground state, so an excited-state optimization needs >= 1.
+                        root_slider = gr.Slider(label="Excited state to optimize (iroot)", value=1, minimum=1, maximum=10, step=1, visible=False)
                         spin_spin_coupling_checkbox = gr.Checkbox(label="Compute spin-spin couplings", value=False, visible=False)
                     with gr.Row():
                         charge_slider = gr.Slider(label="Charge", value=0, minimum=-2, maximum=2, step=1)
@@ -437,12 +483,15 @@ def calculation_tab_content(working_directory_path_state, working_directory_file
                         stop_button = gr.Button("Stop", variant="stop")
 
         working_directory_file_list_state.change(on_working_directory_file_list_change, [working_directory_file_list_state, input_file_name_textbox], [input_structure_file_dropdown, input_file_name_dropdown])
-        calculation_type_radio.change(on_change_calculation_type, [calculation_type_radio, basis_set_dropdown], [input_file_name_textbox, method_type_dropdown, functional_dropdown, basis_set_dropdown, n_states_slider, maxdim_slider, root_slider, spin_spin_coupling_checkbox])
+        calculation_type_radio.change(on_change_calculation_type, [calculation_type_radio, basis_set_dropdown, optimize_target_radio], [input_file_name_textbox, method_type_dropdown, functional_dropdown, basis_set_dropdown, optimize_target_radio, n_states_slider, maxdim_slider, root_slider, spin_spin_coupling_checkbox])
+        optimize_target_radio.change(on_optimize_target_change, [calculation_type_radio, optimize_target_radio], [n_states_slider, maxdim_slider, root_slider])
+        n_states_slider.change(on_n_states_change, [n_states_slider, root_slider], root_slider)
         mm_checkbox.change(on_mm_checkbox_change, mm_checkbox, [force_field_dropdown, max_iters_slider])
         solvation_checkbox.change(on_solvation_checkbox_change, solvation_checkbox, [solvation_dropdown, solvent_dropdown])
         method_type_dropdown.change(on_method_type_change, method_type_dropdown, [method_name_dropdown, functional_dropdown, basis_set_dropdown])
         n_cores_slider.change(on_n_cores_change, [n_cores_slider, memory_slider], memory_slider)
         generate_input_file_button.click(on_generate_input_file, [working_directory_path_state, input_structure_file_dropdown, calculation_type_radio,
+                                                                  optimize_target_radio,
                                                                   mm_checkbox, force_field_dropdown, max_iters_slider, solvation_checkbox, solvation_dropdown, solvent_dropdown,
                                                                   method_type_dropdown, method_name_dropdown, functional_dropdown, basis_set_dropdown, n_states_slider, maxdim_slider, root_slider, spin_spin_coupling_checkbox, charge_slider, multiplicity_dropdown,
                                                                   n_cores_slider, memory_slider, input_file_name_textbox],

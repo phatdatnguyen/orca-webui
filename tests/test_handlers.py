@@ -104,6 +104,116 @@ def test_file_list_handlers_tolerate_no_working_directory():
     assert result.on_working_directory_file_list_change(None)["choices"] == []
 
 
+# --- ECD: the TD-DFT checkbox and the Result-tab button ---------------------
+
+class FakeTDDFTData:
+    """Stand-in for the cclib object stashed in the Result tab's data state."""
+    def __init__(self, with_rotats):
+        self.etenergies = [53985.7, 54496.6, 61380.2]   # cm^-1
+        self.etoscs = [0.0007, 0.0031, 0.0001]
+        self.etsyms = ["Singlet", "Singlet", "Singlet"]
+        self.etsecs = [[((4,), (5,), 0.7)], [((4,), (6,), 0.6)], [((3,), (5,), 0.5)]]
+        if with_rotats:
+            self.etrotats = [-5.49159, 1.88894, 3.39576]
+
+
+ALL_CALCULATION_TYPES = ("Single-Point", "Geometry Optimization", "Frequency",
+                        "NMR Spectrum", "Time-Dependent Density Functional Theory")
+
+# Indices into on_change_calculation_type's return tuple, matching the outputs list
+# wired in calculation_tab_content.
+OPT_TARGET, N_STATES, MAXDIM, ROOT = 4, 5, 6, 7
+
+
+def test_optimize_target_offered_only_for_geometry_optimization():
+    pytest.importorskip("gradio")
+    from orca_webui import calculation
+
+    for calculation_type in ALL_CALCULATION_TYPES:
+        returned = calculation.on_change_calculation_type(
+            calculation_type, "3-21G", calculation.GROUND_STATE)
+        visible = returned[OPT_TARGET]["visible"]
+        assert visible == (calculation_type == "Geometry Optimization"), \
+            f"{calculation_type} -> {visible}"
+
+
+def test_state_controls_shown_for_tddft_and_excited_state_optimization():
+    """nroots/maxdim serve both; iroot is only meaningful when optimizing a state."""
+    pytest.importorskip("gradio")
+    from orca_webui import calculation
+
+    tddft = calculation.on_change_calculation_type(
+        "Time-Dependent Density Functional Theory", "3-21G", calculation.GROUND_STATE)
+    assert tddft[N_STATES]["visible"] and tddft[MAXDIM]["visible"]
+    assert not tddft[ROOT]["visible"]  # a single point has no gradient to follow
+
+    ground_opt = calculation.on_change_calculation_type(
+        "Geometry Optimization", "3-21G", calculation.GROUND_STATE)
+    assert not ground_opt[N_STATES]["visible"] and not ground_opt[ROOT]["visible"]
+
+    excited_opt = calculation.on_change_calculation_type(
+        "Geometry Optimization", "3-21G", calculation.EXCITED_STATE)
+    assert excited_opt[N_STATES]["visible"] and excited_opt[ROOT]["visible"]
+
+
+def test_optimize_target_change_toggles_the_state_controls():
+    pytest.importorskip("gradio")
+    from orca_webui import calculation
+
+    n_states, maxdim, root = calculation.on_optimize_target_change(
+        "Geometry Optimization", calculation.EXCITED_STATE)
+    assert n_states["visible"] and maxdim["visible"] and root["visible"]
+
+    n_states, maxdim, root = calculation.on_optimize_target_change(
+        "Geometry Optimization", calculation.GROUND_STATE)
+    assert not n_states["visible"] and not root["visible"]
+
+    # Switching the radio must not reveal anything for a non-optimization type.
+    n_states, _maxdim, root = calculation.on_optimize_target_change(
+        "Single-Point", calculation.EXCITED_STATE)
+    assert not n_states["visible"] and not root["visible"]
+
+
+def test_root_ceiling_tracks_the_number_of_excited_states():
+    """iroot N needs at least N roots solved, so lowering n_states must lower iroot."""
+    pytest.importorskip("gradio")
+    from orca_webui import calculation
+
+    lowered = calculation.on_n_states_change(5, 9)
+    assert lowered["maximum"] == 5
+    assert lowered["value"] == 5          # clamped down from an unreachable state
+
+    kept = calculation.on_n_states_change(20, 3)
+    assert kept["maximum"] == 20
+    assert kept["value"] == 3             # already reachable, so left alone
+
+
+def test_show_ecd_spectrum_needs_rotatory_strengths():
+    """A result with no rotatory strengths must produce no ECD output."""
+    pytest.importorskip("gradio")
+    from orca_webui import result
+
+    assert result.on_show_ecd_spectrum(FakeTDDFTData(with_rotats=False)) == (None, None)
+    assert result.on_show_ecd_spectrum(object()) == (None, None)
+
+
+def test_show_ecd_spectrum_builds_signed_table_and_figure():
+    pytest.importorskip("gradio")
+    import plotly.graph_objects as go
+    from orca_webui import result
+
+    peak_df, fig = result.on_show_ecd_spectrum(FakeTDDFTData(with_rotats=True))
+
+    assert list(peak_df.columns) == ["Wavelength (nm)", "Rotatory Strength (1e-40 cgs)",
+                                     "Oscillator Strength", "Transitions", "Symmetry"]
+    # Signs must survive into the table; a negative Cotton effect is real information.
+    assert (peak_df["Rotatory Strength (1e-40 cgs)"] < 0).any()
+    assert (peak_df["Rotatory Strength (1e-40 cgs)"] > 0).any()
+    # Sorted by wavelength, like the absorption table.
+    assert list(peak_df["Wavelength (nm)"]) == sorted(peak_df["Wavelength (nm)"])
+    assert isinstance(fig, go.Figure)
+
+
 # --- file dropdowns are sorted alphabetically -------------------------------
 # os.listdir returns an arbitrary order, so the lists are sorted before display.
 

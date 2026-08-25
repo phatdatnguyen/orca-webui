@@ -303,12 +303,16 @@ def get_orca_method_keyword(method_type: str, method_name: str,
 def get_orca_header(f: TextIO, n_proc: int, memory: float | None,
                     solvation: bool, solvation_model: str | None, solvent: str | None,
                     tddft: bool = False, n_states: int = 10, maxdim: int = 5,
-                    root: int = 0) -> None:
+                    root: int | None = None) -> None:
     """Write the ORCA ``%``-block header (parallel, memory, TDDFT, solvation) to ``f``.
 
     Always writes the ``%pal`` block. ``%maxcore`` (per-core memory in MB) is written
     only when ``memory`` is given (``memory`` is in GB). When ``tddft`` is set, a
-    ``%tddft`` block with ``nroots``/``maxdim``/``iroot`` is emitted. When
+    ``%tddft`` block with ``nroots``/``maxdim`` is emitted. ``root`` adds ``iroot``,
+    which selects the state whose *gradient* is followed, so it only means anything
+    alongside ``Opt``: ``iroot 0`` optimizes the ground state, ``iroot N`` (N >= 1)
+    optimizes excited state N. Leave it ``None`` for a single-point excited-state
+    calculation, where the keyword has no effect. When
     ``solvation`` is on and both a model and solvent are given, a ``%cpcm`` block is
     written (SMD via ``smd true`` + ``smdsolvent``, otherwise plain CPCM ``solvent``).
     """
@@ -320,7 +324,8 @@ def get_orca_header(f: TextIO, n_proc: int, memory: float | None,
         f.write('%tddft\n')
         f.write(f'  nroots {n_states}\n')
         f.write(f'  maxdim {maxdim}\n')
-        f.write(f'  iroot {root}\n')
+        if root is not None:
+            f.write(f'  iroot {root}\n')
         f.write('end\n\n')
     if solvation and solvation_model and solvent:
         f.write('%cpcm\n')
@@ -368,15 +373,27 @@ def write_opt_orca_input(mol: Chem.Mol, file_name: str, method_type: str,
                          basis: str = '6-31G(d,p)', charge: int = 0, multiplicity: int = 1,
                          solvation: bool = False, solvation_model: str | None = None,
                          solvent: str | None = None, n_proc: int = 4,
-                         memory: float = 2) -> None:
+                         memory: float = 2, excited_state: bool = False,
+                         n_states: int = 10, maxdim: int = 5, root: int = 1) -> None:
     """Write a geometry-optimization (``Opt``) ORCA input file.
+
+    Optimizes the ground state by default. With ``excited_state`` set, a ``%tddft``
+    block makes ORCA follow the gradient of excited state ``root``, giving that state's
+    relaxed geometry -- which is the geometry an emission (fluorescence) spectrum has to
+    be computed at, since emission happens after the excited state relaxes.
+
+    An excited-state optimization needs the third derivative of the exchange-correlation
+    functional, which ORCA 6.1 does not have natively for every functional: B3LYP and
+    wB97X-D4 abort with "try using LibXC instead", while e.g. PBE works.
 
     ``file_name`` is the path without extension; ``.inp`` is appended.
     """
     with open(file_name + '.inp', 'w') as f:
         method = get_orca_method_keyword(method_type, method_name, functional, basis)
         f.write(f'! {method} Opt\n\n')
-        get_orca_header(f, n_proc, memory, solvation, solvation_model, solvent)
+        get_orca_header(f, n_proc, memory, solvation, solvation_model, solvent,
+                        tddft=excited_state, n_states=n_states, maxdim=maxdim,
+                        root=root if excited_state else None)
         get_orca_coordinates(f, mol, charge, multiplicity)
 
 def write_opt_freq_orca_input(mol: Chem.Mol, file_name: str, method_type: str,
@@ -399,20 +416,28 @@ def write_opt_freq_orca_input(mol: Chem.Mol, file_name: str, method_type: str,
 def write_tddft_orca_input(mol: Chem.Mol, file_name: str, method_type: str,
                            method_name: str, functional: str = 'B3LYP',
                            basis: str = '6-31G(d,p)', n_states: int = 10,
-                           maxdim: int = 5, root: int = 0, charge: int = 0,
+                           maxdim: int = 5, charge: int = 0,
                            multiplicity: int = 1, solvation: bool = False,
                            solvation_model: str | None = None, solvent: str | None = None,
                            n_proc: int = 4, memory: float = 2) -> None:
-    """Write a TD-DFT input file (used for absorption/emission spectra).
+    """Write a single-point TD-DFT input file (absorption/emission/ECD spectra).
 
-    Adds ``RIJCOSX TightSCF Opt`` to the method line and a ``%tddft`` block
-    (``n_states`` roots, expansion-space ``maxdim``, follow ``root`` for the
-    optimization). ``file_name`` is the path without extension; ``.inp`` is appended.
+    Adds ``RIJCOSX TightSCF`` to the method line and a ``%tddft`` block (``n_states``
+    roots, expansion-space ``maxdim``). Deliberately **no** ``Opt``: this is a single
+    point on the geometry it is given, so the spectrum belongs to the structure the user
+    selected. Optimizing here would silently discard that geometry, spend a full
+    optimization on every spectrum, and make ORCA reject B88-containing functionals such
+    as B3LYP -- its input check demands XC third derivatives as soon as ``%tddft`` and
+    ``Opt`` appear together. Optimize first with :func:`write_opt_orca_input` (including
+    for an excited state, when an emission spectrum is wanted) and run this on the
+    resulting geometry.
+
+    ``file_name`` is the path without extension; ``.inp`` is appended.
     """
     with open(file_name + '.inp', 'w') as f:
         method = get_orca_method_keyword(method_type, method_name, functional, basis)
-        f.write(f'! {method} RIJCOSX TightSCF Opt\n\n')
-        get_orca_header(f, n_proc, memory, solvation, solvation_model, solvent, tddft=True, n_states=n_states, maxdim=maxdim, root=root)
+        f.write(f'! {method} RIJCOSX TightSCF\n\n')
+        get_orca_header(f, n_proc, memory, solvation, solvation_model, solvent, tddft=True, n_states=n_states, maxdim=maxdim)
         get_orca_coordinates(f, mol, charge, multiplicity)
 
 def write_nmr_orca_input(mol: Chem.Mol, file_name: str, method_type: str,
@@ -640,6 +665,108 @@ def generate_absorption_emission_spectrum_interactive(
     # Adjust plot range if specified
     if plot_range:
         fig.update_xaxes(range=plot_range)
+
+    return fig
+
+def generate_ecd_spectrum_interactive(
+    wavelengths, rotatory_strengths, points: int = 10000,
+    plot_range: tuple[float, float] | None = None,
+    fwhm_wavenumber: float = 3000.0,
+) -> go.Figure | None:
+    """Build an interactive ECD spectrum from wavelengths + rotatory strengths.
+
+    Differs from :func:`generate_absorption_emission_spectrum_interactive` in two ways
+    that matter physically:
+
+    * Rotatory strengths are **signed**. They are summed with their sign so positive and
+      negative Cotton effects appear above and below zero, and neighbouring bands of
+      opposite sign partially cancel. Taking magnitudes here would destroy the
+      information that makes ECD useful (two enantiomers differ only by the sign of
+      every R, so their spectra are mirror images).
+    * Broadening is done in **wavenumber space**, where a Gaussian band shape is the
+      physically appropriate model, and only the display axis is wavelength. Broadening
+      with a constant width directly in nm would make bands artificially narrow at short
+      wavelengths and wide at long ones.
+
+    ``fwhm_wavenumber`` is the band width in cm^-1 (~3000 cm^-1 is a conventional
+    starting point for ECD). The curve is scaled by its largest absolute value, so the
+    y-axis is relative and signed, in [-1, 1]. Returns ``None`` when no transitions are
+    supplied.
+    """
+    if wavelengths is None or len(wavelengths) == 0:
+        print("No ECD transitions to plot.")
+        return None
+
+    wavelengths = np.asarray(wavelengths, dtype=float)
+    rotatory_strengths = np.asarray(rotatory_strengths, dtype=float)
+
+    if plot_range:
+        min_wavelength, max_wavelength = plot_range
+    else:
+        min_wavelength = np.min(wavelengths) - 50
+        max_wavelength = np.max(wavelengths) + 50
+    # The nm -> cm^-1 conversion below divides by the axis, so it must stay positive.
+    min_wavelength = max(float(min_wavelength), 1.0)
+    max_wavelength = max(float(max_wavelength), min_wavelength + 1.0)
+
+    x = np.linspace(min_wavelength, max_wavelength, points)
+    grid_wavenumbers = 1e7 / x
+
+    spectrum = np.zeros_like(x)
+    annotations = []
+    for wavelength, rotatory_strength in zip(wavelengths, rotatory_strengths):
+        if wavelength <= 0:
+            continue
+        spectrum += rotatory_strength * gaussian(grid_wavenumbers, 1e7 / wavelength, fwhm_wavenumber)
+        annotations.append({
+            'wavelength': wavelength,
+            'rotatory_strength': rotatory_strength,
+            'text': f"{wavelength:.2f}",
+        })
+
+    # Scale by the largest absolute value so the sign is preserved.
+    max_intensity = np.max(np.abs(spectrum))
+    if max_intensity != 0:
+        spectrum /= max_intensity
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=x,
+        y=spectrum,
+        mode='lines',
+        line=dict(color='black'),
+        name='ECD',
+    ))
+    # ECD crosses zero, so the baseline is a meaningful reference and is drawn in.
+    fig.add_hline(y=0, line_width=1, line_color='grey')
+
+    # Annotate each transition on the side its own sign points to.
+    for ann in annotations:
+        above = ann['rotatory_strength'] >= 0
+        fig.add_annotation(
+            x=ann['wavelength'],
+            y=1.05 if above else -1.05,
+            text=ann['text'],
+            showarrow=True,
+            arrowhead=1,
+            ax=0,
+            ay=-40 if above else 40,
+            yshift=10 if above else -10,
+            textangle=-90,
+            font=dict(color='red' if above else 'blue'),
+        )
+
+    fig.update_layout(
+        xaxis=dict(title='Wavelength (nm)'),
+        # Symmetric range so a mirror-image (opposite enantiomer) spectrum is directly
+        # comparable, and so the zero crossing sits in the middle.
+        yaxis=dict(title='Relative Δε (a.u.)', range=[-1.3, 1.3]),
+        title='ECD Spectrum',
+        showlegend=False,
+    )
+
+    if plot_range:
+        fig.update_xaxes(range=[min_wavelength, max_wavelength])
 
     return fig
 

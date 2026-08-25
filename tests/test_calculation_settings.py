@@ -91,7 +91,8 @@ CALCULATION_TYPES = [
 
 def _basis_update(calculation_type, current_basis="3-21G"):
     """The basis-set gr.update() is the 4th value returned by the handler."""
-    return calculation.on_change_calculation_type(calculation_type, current_basis)[3]
+    return calculation.on_change_calculation_type(
+        calculation_type, current_basis, calculation.GROUND_STATE)[3]
 
 
 @pytest.mark.parametrize("calculation_type", CALCULATION_TYPES)

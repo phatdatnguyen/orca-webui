@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "orca-webui"
-version = "0.1.9"
-description = "A Gradio web UI for simple ORCA computational-chemistry calculations (single point, geometry optimization, frequency/IR, TD-DFT UV-Vis, and NMR)."
+version = "0.1.10"
+description = "A Gradio web UI for simple ORCA computational-chemistry calculations (single point, ground- and excited-state geometry optimization, frequency/IR, TD-DFT UV-Vis and ECD, and NMR)."
 readme = "Readme.md"
 requires-python = ">=3.10"
 license = "GPL-3.0-or-later"
@@ -17,6 +17,9 @@ keywords = [
     "quantum chemistry",
     "dft",
     "nmr",
+    "ecd",
+    "circular dichroism",
+    "tddft",
     "spectroscopy",
     "gradio",
     "chemistry",
