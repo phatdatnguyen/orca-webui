@@ -5,6 +5,7 @@ so the whole module is skipped when those optional UI deps are absent. Run them 
 full application environment (the venv) to exercise the fixed bugs end-to-end.
 """
 import os
+import re
 import sys
 
 import pytest
@@ -332,7 +333,8 @@ def test_structure_viewer_labels_atoms_by_file_position(tmp_path, monkeypatch):
     html = working_directory.on_view_structure_file(str(tmp_path), "conformer_1.xyz")
     assert html is not None
 
-    doc = (tmp_path / "static" / "structure.html").read_text()
+    viewer_path = re.search(r'src="/(static/[^"?]+)', html).group(1)
+    doc = (tmp_path / viewer_path).read_text()
     for expected in ["C0", "C1", "O2", "H3", "H4", "H5", "H6", "H7", "H8"]:
         assert f'"{expected}"' in doc, f"missing label {expected}"
     # The per-element PDB naming that caused the bug must not be in use.

@@ -13,11 +13,9 @@ import shutil
 import subprocess
 import threading
 import math
+from html import escape
 import gradio as gr
-import pandas as pd
-from rdkit import Chem
 from rdkit.Chem import AllChem
-import cclib
 from .utils import *
 
 # Physical RAM in whole GB.
@@ -83,11 +81,12 @@ def on_working_directory_file_list_change(working_directory_file_list, input_fil
     arbitrary order ``os.listdir`` returns.
     """
     working_directory_file_list = working_directory_file_list or []
-    input_file_name = input_file_name or ""
+    input_file_name = (input_file_name or "").strip()
     structure_file_names = sorted((f for f in working_directory_file_list if f.endswith('.xyz') or f.endswith('.pdb') or f.endswith('.mol') or f.endswith('.mol2') or f.endswith('.log')), key=str.lower)
     input_file_names = sorted((f for f in working_directory_file_list if f.endswith('.inp')), key=str.lower)
-    if input_file_name + ".inp" in input_file_names:
-        input_file_name_value = input_file_name + ".inp"
+    requested_input = input_file_name if input_file_name.endswith(".inp") else input_file_name + ".inp"
+    if requested_input in input_file_names:
+        input_file_name_value = requested_input
     else:
         input_file_name_value = input_file_names[0] if len(input_file_names) > 0 else None
     
@@ -215,18 +214,26 @@ def on_generate_input_file(working_directory_path, input_structure_file_dropdown
     try:
         # Get the molecule object. Same loader as the structure viewer, so the atom
         # order written below is the order the viewer labelled on screen.
-        file_path = os.path.join(working_directory_path, input_structure_file_dropdown)
+        file_path = resolve_working_file(working_directory_path, input_structure_file_dropdown)
+        input_file_name = (input_file_name or "").strip()
+        if input_file_name.endswith(".inp"):
+            input_file_name = input_file_name[:-4]
+        if not input_file_name:
+            raise ValueError("Please enter an input file name.")
+        # Validate the final filename too, including any existing output symlink.
+        input_file_path = resolve_working_file(working_directory_path, input_file_name + ".inp")[:-4]
         mol = mol_from_structure_file(file_path)
 
         # Optimize geometry with molecular mechanics
         if use_mm:
             if force_field=="MMFF":
-                AllChem.MMFFOptimizeMolecule(mol, maxIters=max_iters)
+                mm_result = AllChem.MMFFOptimizeMolecule(mol, maxIters=max_iters)
             else: # force_field=="UFF"
-                AllChem.UFFOptimizeMolecule(mol, maxIters=max_iters)
+                mm_result = AllChem.UFFOptimizeMolecule(mol, maxIters=max_iters)
+            if mm_result < 0:
+                raise ValueError(f"{force_field} parameters are unavailable for this structure.")
 
         # Generate input file
-        input_file_path = os.path.join(working_directory_path, input_file_name)
         if calculation_type == "Single-Point":
             write_sp_orca_input(mol, input_file_path, method_type, method_name, functional=functional, basis=basis_set_textbox,
                                 charge=charge, multiplicity=multiplicity,
@@ -251,9 +258,11 @@ def on_generate_input_file(working_directory_path, input_structure_file_dropdown
                                  solvation=use_solvation, solvation_model=solvation_model, solvent=solvent, n_proc=n_cores, memory=memory)
 
         status = "Input file generated."
+        if use_mm and mm_result != 0:
+            status += " Molecular mechanics reached the iteration limit before converging."
         return f"<span style='color:green;'>{status}</span>", get_files_in_working_directory(working_directory_path)
     except Exception as exc:
-        status = exc
+        status = escape(str(exc))
         return f"<span style='color:red;'>{status}</span>", get_files_in_working_directory(working_directory_path)
 
 def on_n_cores_change(n_cores, memory):
@@ -273,7 +282,7 @@ def resolve_orca_executable(orca_executable_path):
     back to the PATH lookup done at import and any relative entry is resolved and made
     absolute before it reaches ``subprocess``.
     """
-    candidate = (orca_executable_path or "").strip()
+    candidate = os.path.expanduser((orca_executable_path or "").strip())
     if not candidate:
         candidate = default_orca_path
     if not candidate:
@@ -286,7 +295,9 @@ def on_run_calculation(working_directory_path, input_file_name, orca_executable_
     """Run the external ORCA binary on ``input_file_name`` (a ``.inp`` in the wd).
 
     ORCA is invoked by absolute path (see :func:`resolve_orca_executable`) because it
-    rejects parallel runs launched via a bare command name. stdout is captured to a
+    rejects parallel runs launched via a bare command name. The process runs in the
+    selected working directory so relative file references and scratch files stay
+    with the calculation. stdout is captured to a
     same-named ``.log``; an existing ``.log`` from a previous run is first renamed to
     ``.log.bak`` so an accidental click cannot destroy it. Returns
     ``(status_html, file_list)`` with the elapsed time on success; a non-zero ORCA exit
@@ -299,45 +310,60 @@ def on_run_calculation(working_directory_path, input_file_name, orca_executable_
         gr.Warning("Please choose an input file.")
         return "", get_files_in_working_directory(working_directory_path)
 
-    orca_executable = resolve_orca_executable(orca_executable_path)
-    if not orca_executable or not os.path.isfile(orca_executable):
-        gr.Warning("Please set the full path to the ORCA executable in the Settings accordion.")
-        status = f"ORCA executable not found: {orca_executable or '(empty)'}"
-        return f"<span style='color:red;'>{status}</span>", get_files_in_working_directory(working_directory_path)
-
     try:
-        input_file_path = os.path.join(working_directory_path, input_file_name)
-        output_file_path = os.path.join(working_directory_path, os.path.splitext(input_file_name)[0] + ".log")
+        orca_executable = resolve_orca_executable(orca_executable_path)
+        if not orca_executable or not os.path.isfile(orca_executable):
+            gr.Warning("Please set the full path to the ORCA executable in the Settings accordion.")
+            raise ValueError(f"ORCA executable not found: {orca_executable or '(empty)'}")
+        if not os.access(orca_executable, os.X_OK):
+            raise ValueError(f"ORCA file is not executable: {orca_executable}")
+
+        input_file_path = resolve_working_file(working_directory_path, input_file_name)
+        if not input_file_name.endswith(".inp") or not os.path.isfile(input_file_path):
+            raise ValueError(f"Input file not found or not an .inp file: {input_file_name}")
+        output_file_path = resolve_working_file(
+            working_directory_path, os.path.splitext(input_file_name)[0] + ".log")
+        # Resolve every path before rotating a previous result or creating a new log.
+        backup_file_path = resolve_working_file(
+            working_directory_path, os.path.basename(output_file_path) + ".bak")
 
         # Opening the .log below truncates it, so preserve any previous run's results
         # first: an accidental click on Run would otherwise destroy them. os.replace
         # overwrites an older backup atomically and works on Windows too.
         backed_up = False
-        if os.path.isfile(output_file_path):
-            os.replace(output_file_path, output_file_path + ".bak")
-            backed_up = True
-
-        # Run calculation with ORCA. The full pathname is required for parallel runs.
-        # Popen rather than subprocess.run so the Stop button has something to kill;
-        # the handle is published under the lock and cleared again on the way out.
         cmd = [orca_executable, input_file_path]
-        start = time.time()
-        print(f"Running command: {' '.join(cmd)} > {output_file_path}")
-        with open(output_file_path, 'w') as outfile:
-            process = subprocess.Popen(cmd, stdout=outfile, stderr=subprocess.STDOUT)
-            with _orca_lock:
+        start = time.monotonic()
+        # Keep the launch and handle publication together: concurrent calls must not
+        # replace the process Stop refers to or truncate a running calculation's log.
+        with _orca_lock:
+            if _orca_process is not None:
+                raise ValueError("A calculation is already running. Wait for it to finish or stop it first.")
+            if os.path.isfile(output_file_path):
+                os.replace(output_file_path, backup_file_path)
+                backed_up = True
+            try:
+                with open(output_file_path, 'w') as outfile:
+                    process = subprocess.Popen(
+                        cmd, stdout=outfile, stderr=subprocess.STDOUT,
+                        cwd=os.path.dirname(input_file_path))
+            except Exception:
+                # An invalid binary can fail at launch despite passing the checks
+                # above. Leave the previous result at its original filename.
+                if backed_up:
+                    os.replace(backup_file_path, output_file_path)
+                raise
+            else:
                 _orca_process = process
                 _orca_stopped_by_user = False
-            try:
-                return_code = process.wait()
-            finally:
-                with _orca_lock:
-                    _orca_process = None
-                    stopped = _orca_stopped_by_user
-        end = time.time()
-        duration = end - start
+        try:
+            return_code = process.wait()
+        finally:
+            with _orca_lock:
+                _orca_process = None
+                stopped = _orca_stopped_by_user
+        duration = time.monotonic() - start
 
-        log_name = os.path.basename(output_file_path)
+        log_name = escape(os.path.basename(output_file_path))
         if stopped:
             status = f"Calculation stopped after {round(duration, 3)} s. Partial output in {log_name}."
             return f"<span style='color:red;'>{status}</span>", get_files_in_working_directory(working_directory_path)
@@ -350,17 +376,17 @@ def on_run_calculation(working_directory_path, input_file_name, orca_executable_
             status += f" Previous log saved as {log_name}.bak."
         return f"<span style='color:green;'>{status}</span>", get_files_in_working_directory(working_directory_path)
     except Exception as exc:
-        status = f"Error running calculation: {exc}"
+        status = f"Error running calculation: {escape(str(exc))}"
         return f"<span style='color:red;'>{status}</span>", get_files_in_working_directory(working_directory_path)
 
 def on_calculation_started():
-    """Grey out the Run button for the duration of a calculation.
+    """Show the running status and disable Run before the blocking calculation.
 
     Chained *ahead* of :func:`on_run_calculation` rather than folded into it: that
     handler blocks until ORCA exits, so anything it returned would only reach the
     browser once the run was already over.
     """
-    return gr.update(interactive=False)
+    return gr.update(interactive=False), "<span style='color:orange;'>Running calculation...</span>"
 
 def on_calculation_finished():
     """Re-enable the Run button once no calculation is running.
@@ -389,22 +415,28 @@ def on_stop_calculation():
         _orca_stopped_by_user = True
 
     try:
-        parent = psutil.Process(process.pid)
-        targets = parent.children(recursive=True) + [parent]
-    except psutil.NoSuchProcess:
-        targets = []
+        try:
+            parent = psutil.Process(process.pid)
+            targets = parent.children(recursive=True) + [parent]
+        except psutil.NoSuchProcess:
+            targets = []
 
-    for target in targets:
-        try:
-            target.terminate()
-        except psutil.NoSuchProcess:
-            pass
-    _, alive = psutil.wait_procs(targets, timeout=5)
-    for target in alive:
-        try:
-            target.kill()
-        except psutil.NoSuchProcess:
-            pass
+        for target in targets:
+            try:
+                target.terminate()
+            except psutil.NoSuchProcess:
+                pass
+        _, alive = psutil.wait_procs(targets, timeout=5)
+        for target in alive:
+            try:
+                target.kill()
+            except psutil.NoSuchProcess:
+                pass
+    except Exception as exc:
+        with _orca_lock:
+            if _orca_process is process:
+                _orca_stopped_by_user = False
+        return f"<span style='color:red;'>Unable to stop calculation: {escape(str(exc))}</span>"
 
     return "<span style='color:red;'>Stopping calculation...</span>"
 
@@ -496,9 +528,9 @@ def calculation_tab_content(working_directory_path_state, working_directory_file
                                                                   method_type_dropdown, method_name_dropdown, functional_dropdown, basis_set_dropdown, n_states_slider, maxdim_slider, root_slider, spin_spin_coupling_checkbox, charge_slider, multiplicity_dropdown,
                                                                   n_cores_slider, memory_slider, input_file_name_textbox],
                                                                  [status_markdown, working_directory_file_list_state])
-        run_button.click(on_calculation_started, None, run_button) \
-                  .then(on_run_calculation, [working_directory_path_state, input_file_name_dropdown, orca_path_textbox], [status_markdown, working_directory_file_list_state]) \
-                  .then(on_calculation_finished, None, run_button)
+        run_button.click(on_calculation_started, None, [run_button, status_markdown], queue=False) \
+                  .then(on_run_calculation, [working_directory_path_state, input_file_name_dropdown, orca_path_textbox], [status_markdown, working_directory_file_list_state], show_progress="hidden") \
+                  .then(on_calculation_finished, None, run_button, queue=False)
         # concurrency_limit=None: without it this event would queue behind the running
         # calculation it is meant to interrupt, and only fire once ORCA had finished.
         stop_button.click(on_stop_calculation, None, status_markdown, concurrency_limit=None)

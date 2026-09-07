@@ -1,5 +1,6 @@
 include LICENSE.txt
 include Readme.md
+include CHANGELOG.md
 include requirements-dev.txt
 include pytest.ini
 recursive-include src/orca_webui *.css

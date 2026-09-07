@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "orca-webui"
-version = "0.1.10"
+version = "0.1.11"
 description = "A Gradio web UI for simple ORCA computational-chemistry calculations (single point, ground- and excited-state geometry optimization, frequency/IR, TD-DFT UV-Vis and ECD, and NMR)."
 readme = "Readme.md"
 requires-python = ">=3.10"

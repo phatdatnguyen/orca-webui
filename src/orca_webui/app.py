@@ -7,7 +7,7 @@ the first free port at/after 7860.
 Runtime directories (``data/`` and ``static/``) are created in the **current working
 directory** so an installed copy of the package never writes into its own install
 location; ``styles.css`` ships inside the package and is read from there. Transient
-artifacts left in ``static/`` (and stray ``*.log`` files) by a previous run are cleaned
+artifacts left in ``static/`` by a previous run are cleaned
 up on startup.
 """
 import socket
@@ -28,7 +28,6 @@ _STYLES_PATH = Path(__file__).parent / "styles.css"
 
 # Glob patterns for transient files removed from the run directory on startup.
 _TRANSIENT_PATTERNS = (
-    "*.log",
     "static/*.html",
     "static/**/*.html",
     "static/**/*.cube",
@@ -38,9 +37,14 @@ _TRANSIENT_PATTERNS = (
 
 def _cleanup_transient_files(run_dir: Path) -> None:
     """Delete transient artifacts left in ``run_dir`` by a previous session."""
+    static_dir = run_dir / "static"
+    if static_dir.is_symlink():
+        return
     for pattern in _TRANSIENT_PATTERNS:
         for filepath in run_dir.glob(pattern):
             try:
+                if not filepath.resolve().is_relative_to(static_dir.resolve()):
+                    continue
                 filepath.unlink()
             except OSError:
                 pass  # best-effort cleanup; ignore files we cannot remove
@@ -64,7 +68,7 @@ def build_app(run_dir: Path | None = None) -> FastAPI:
     ``run_dir`` (default: current working directory) is where the ``data/`` and
     ``static/`` directories are created and served from.
     """
-    run_dir = Path.cwd() if run_dir is None else run_dir
+    run_dir = Path.cwd() if run_dir is None else Path(run_dir).resolve()
     _cleanup_transient_files(run_dir)
 
     app = FastAPI()
@@ -79,7 +83,8 @@ def build_app(run_dir: Path | None = None) -> FastAPI:
 
     with gr.Blocks(css_paths=_STYLES_PATH) as blocks:
         with gr.Row():
-            working_directory_path_state, working_directory_file_list_state = working_directory_blocks()
+            working_directory_path_state, working_directory_file_list_state = working_directory_blocks(
+                base_path=run_dir / "data", static_dir=static_dir)
             with gr.Column(scale=2):
                 with gr.Row(min_height=40):
                     status_markdown = gr.Markdown()

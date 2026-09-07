@@ -14,12 +14,33 @@ from __future__ import annotations
 
 import os
 import re
+from math import comb
 from typing import TextIO
 
 from rdkit import Chem
 from rdkit.Chem import AllChem
 import numpy as np
 import plotly.graph_objects as go
+
+
+def resolve_working_file(working_directory_path: str, file_name: str) -> str:
+    """Resolve a single file name inside an existing working directory.
+
+    UI selections and editable output names must not escape the chosen directory,
+    including through a symlink. Return an absolute path for subprocess callers.
+    """
+    if not working_directory_path or not os.path.isdir(working_directory_path):
+        raise ValueError("Please open an existing working directory.")
+    if (not isinstance(file_name, str) or not file_name.strip()
+            or file_name in {'.', '..'}
+            or any(c in file_name for c in ('/', '\\', '\x00'))
+            or os.path.isabs(file_name) or os.path.splitdrive(file_name)[0]):
+        raise ValueError("Please use a file name without directory separators.")
+    directory = os.path.realpath(working_directory_path)
+    file_path = os.path.join(directory, file_name)
+    if os.path.commonpath([directory, os.path.realpath(file_path)]) != directory:
+        raise ValueError("The selected file points outside the working directory.")
+    return file_path
 
 
 def get_files_in_working_directory(working_directory_path: str) -> list[str]:
@@ -35,8 +56,22 @@ def get_files_in_working_directory(working_directory_path: str) -> list[str]:
     """
     if not working_directory_path:
         return []
-    files = [f for f in os.listdir(working_directory_path) if not f.endswith('Zone.Identifier')]
-    return files
+    try:
+        with os.scandir(working_directory_path) as entries:
+            files = []
+            for entry in entries:
+                if entry.name.endswith('Zone.Identifier') or not entry.is_file():
+                    continue
+                try:
+                    resolve_working_file(working_directory_path, entry.name)
+                except ValueError:
+                    continue
+                files.append(entry.name)
+        return sorted(files, key=str.lower)
+    except OSError:
+        # Error handlers also refresh this state; a directory deleted outside the
+        # app must not raise again while they are reporting the original error.
+        return []
 
 def conformer_to_xyz_file(mol: Chem.Mol, conf_id: int, file_path: str,
                           charge: int = 0, multiplicity: int = 1) -> None:
@@ -129,10 +164,10 @@ def _assign_formal_charges(mol: Chem.RWMol) -> None:
 def mol_from_xyz_file(file_path: str, return_charge_and_multiplicity: bool = False):
     """Read an XYZ file into a bond-free RDKit ``Mol`` with one conformer.
 
-    The first line may be ``"<charge> <multiplicity>"`` (as written by
-    :func:`conformer_to_xyz_file`); if it is not a two-integer line, charge/
-    multiplicity default to ``0``/``1``. Only lines with exactly four
-    whitespace-separated fields (symbol + x/y/z) are treated as atoms.
+    Supports standard XYZ (atom count, comment, coordinates) and the legacy
+    ``"<charge> <multiplicity>"`` header written by :func:`conformer_to_xyz_file`.
+    Standard XYZ comments are never interpreted as atoms. Malformed or truncated
+    coordinates raise ``ValueError`` rather than silently dropping atoms.
 
     Returns the ``Mol`` alone, or ``(mol, charge, multiplicity)`` when
     ``return_charge_and_multiplicity`` is True.
@@ -140,38 +175,65 @@ def mol_from_xyz_file(file_path: str, return_charge_and_multiplicity: bool = Fal
     with open(file_path, 'r') as file:
         xyz_string = file.read()
 
-    lines = xyz_string.split('\n')
-    if len(lines[0].split())==2:
-        charge, multiplicity = map(int, lines[0].split())
+    lines = xyz_string.splitlines()
+    element_symbols = {Chem.GetPeriodicTable().GetElementSymbol(i) for i in range(1, 119)}
+    if not lines:
+        raise ValueError("The XYZ file is empty.")
+    header = lines[0].split()
+    charge, multiplicity = 0, 1
+    atom_count = None
+    if len(header) == 1:
+        try:
+            atom_count = int(header[0])
+        except ValueError as exc:
+            raise ValueError("The XYZ header must contain an atom count or charge and multiplicity.") from exc
+        if atom_count < 1:
+            raise ValueError("The XYZ atom count must be positive.")
+        coordinate_lines = lines[2:]
+    elif len(header) == 2:
+        try:
+            charge, multiplicity = map(int, header)
+        except ValueError as exc:
+            raise ValueError("The XYZ charge and multiplicity must be integers.") from exc
+        if multiplicity < 1:
+            raise ValueError("The XYZ multiplicity must be positive.")
+        coordinate_lines = lines[1:]
+        # Older files may include a comment after the charge/multiplicity header.
+        if coordinate_lines:
+            first = coordinate_lines[0].split()
+            is_coordinate = bool(first) and first[0].capitalize() in element_symbols
+            if len(first) == 4:
+                try:
+                    tuple(map(float, first[1:]))
+                    is_coordinate = True  # Unknown element symbols must be rejected below.
+                except ValueError:
+                    pass
+            if not is_coordinate:
+                coordinate_lines = coordinate_lines[1:]
     else:
-        charge, multiplicity = 0, 1
+        raise ValueError("The XYZ header must contain an atom count or charge and multiplicity.")
 
-    # Create a new empty molecule
+    coordinate_lines = [line for line in coordinate_lines if line.strip()]
+    if atom_count is not None and len(coordinate_lines) != atom_count:
+        raise ValueError(f"XYZ atom count is {atom_count}, but found {len(coordinate_lines)} coordinate lines.")
+    if not coordinate_lines:
+        raise ValueError("The XYZ file contains no atomic coordinates.")
+
     mol = Chem.RWMol()
-
-    # Parse the atomic coordinates and add atoms
-    elements = []
-    for line in lines[1:]:
-        if len(line.split())==4:
-            parts = line.split()
-            element = parts[0].capitalize()
-            atom = Chem.Atom(element)
-            mol.AddAtom(atom)
-            elements.append(element)
-        else:
-            continue
-
-    # Add 3D coordinates to the molecule
-    conf = Chem.Conformer(mol.GetNumAtoms())
-    atom_idx = 0
-    for line in lines[1:]:
-        if len(line.split())==4:
-            parts = line.split()
-            x, y, z = map(float, parts[1:4])
-            conf.SetAtomPosition(atom_idx, (x, y, z))
-            atom_idx += 1
-        else:
-            continue
+    conf = Chem.Conformer(len(coordinate_lines))
+    for atom_idx, line in enumerate(coordinate_lines):
+        parts = line.split()
+        if len(parts) != 4:
+            raise ValueError(f"Invalid XYZ coordinate line: {line!r}")
+        try:
+            atom = Chem.Atom(parts[0].capitalize())
+            coords = tuple(map(float, parts[1:]))
+        except (ValueError, RuntimeError) as exc:
+            raise ValueError(f"Invalid XYZ coordinate line: {line!r}") from exc
+        if atom.GetAtomicNum() == 0 or not np.all(np.isfinite(coords)):
+            raise ValueError(f"Invalid XYZ coordinate line: {line!r}")
+        mol.AddAtom(atom)
+        conf.SetAtomPosition(atom_idx, coords)
     mol.AddConformer(conf)
                 
     # Convert to a regular Mol object
@@ -197,6 +259,8 @@ def mol_from_orca_file(filename: str) -> Chem.Mol:
 
     # Parse the output file using cclib
     parser = cclib.io.ccopen(filename)
+    if parser is None:
+        raise ValueError("The output file format could not be recognized.")
     data = parser.parse()
 
     # Extract atomic numbers and coordinates
@@ -234,6 +298,8 @@ def mol_from_orca_geometry(logfile: str) -> Chem.Mol:
     :func:`add_bonds` if connectivity is needed.
     """
     symbols, coords = parse_orca_geometry(logfile)
+    if not symbols:
+        raise ValueError("No ORCA Cartesian coordinates were found in the output file.")
 
     mol = Chem.RWMol()
     for symbol in symbols:
@@ -259,27 +325,34 @@ def mol_from_structure_file(file_path: str) -> Chem.Mol:
     :func:`mol_from_orca_geometry`; :func:`mol_from_orca_file` (cclib) *reorders* atoms
     and is only used as a fallback when no coordinate block can be parsed.
     """
-    if file_path.endswith('.pdb'):
+    file_path = os.fspath(file_path)
+    suffix = os.path.splitext(file_path)[1].lower()
+    if suffix == '.pdb':
         mol = Chem.MolFromPDBFile(file_path, sanitize=False, removeHs=False)
-    elif file_path.endswith('.mol'):
+    elif suffix == '.mol':
         mol = Chem.MolFromMolFile(file_path, sanitize=False, removeHs=False)
-    elif file_path.endswith('.mol2'):
+    elif suffix == '.mol2':
         mol = Chem.MolFromMol2File(file_path, sanitize=False, removeHs=False)
-    elif file_path.endswith('.xyz'):
+    elif suffix == '.xyz':
         mol = add_bonds(mol_from_xyz_file(file_path))
-    else:  # file_path.endswith('.log')
+    elif suffix == '.log':
         try:
             mol = add_bonds(mol_from_orca_geometry(file_path))
         except Exception:
             mol = add_bonds(mol_from_orca_file(file_path))
+    else:
+        raise ValueError(f"Unsupported structure file extension: {suffix}")
 
+    if mol is None or mol.GetNumAtoms() == 0:
+        raise ValueError("The structure file contains no readable atoms.")
     Chem.SanitizeMol(mol)
     # Display/write the file's REAL coordinates. Only embed a fresh conformer if the
     # file somehow carried none — re-embedding otherwise would discard the parsed (e.g.
     # ORCA-optimized) geometry and, because add_bonds perceives every bond as single,
     # pucker planar/aromatic systems into a bogus sp3-looking shape.
     if mol.GetNumConformers() == 0:
-        AllChem.EmbedMolecule(mol)
+        if AllChem.EmbedMolecule(mol) < 0:
+            raise ValueError("Could not generate coordinates for the structure.")
 
     return mol
 
@@ -914,7 +987,7 @@ def parse_orca_geometry(logfile: str) -> tuple[list[str], np.ndarray]:
                 j += 1
             if block_symbols:
                 symbols, coords = block_symbols, block_coords  # keep the last block
-    return symbols, np.asarray(coords, dtype=float)
+    return symbols, np.asarray(coords, dtype=float).reshape(-1, 3)
 
 def perceive_bonds(coords, symbols: list[str], tolerance: float = 1.3) -> list[set[int]]:
     """Infer bonds from interatomic distances and covalent radii.
@@ -1173,15 +1246,17 @@ def generate_nmr_spectrum_interactive(
     for peak in peaks:
         shift = peak['shift']
         intensity = peak['count']
-        # First-order multiplet: each coupled partner halves the weight and
-        # splits the peak by J/freq (Hz -> ppm). Coupling to n equivalent
-        # partners splits n times, giving an (n+1)-line Pascal multiplet.
+        # Use the n+1 distinct Pascal lines directly. Repeated binary splitting
+        # materializes 2**n entries, most at duplicate positions, and can freeze
+        # the result tab for large equivalent partner groups.
         sub_peaks = [(shift, 1.0)]
         for c in peak['couplings']:
-            half_j_ppm = (c['J'] / 2.0) / frequency
-            for _ in range(c['n']):
-                sub_peaks = [(p - half_j_ppm, w / 2.0) for p, w in sub_peaks] + \
-                            [(p + half_j_ppm, w / 2.0) for p, w in sub_peaks]
+            n = c['n']
+            spacing = c['J'] / frequency
+            sub_peaks = [
+                (p + (k - n / 2) * spacing, w * comb(n, k) / 2**n)
+                for p, w in sub_peaks for k in range(n + 1)
+            ]
         for pos, weight in sub_peaks:
             spectrum += intensity * weight * lorentzian_nmr(x, pos, lw_ppm)
         label = f"{element_symbol}-" + ",".join(str(i) for i in peak['atom_idxs'])
@@ -1237,6 +1312,6 @@ def generate_nmr_spectrum_interactive(
 
     # Adjust plot range if specified
     if plot_range:
-        fig.update_xaxes(range=plot_range)
+        fig.update_xaxes(range=sorted(plot_range, reverse=True))
 
     return fig

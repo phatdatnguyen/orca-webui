@@ -115,10 +115,35 @@ The **Settings** accordion on the Calculation tab controls how ORCA is invoked:
   calculation may claim `cores x maxcore` in total. The slider's ceiling therefore
   shrinks as the core count rises, keeping the product inside physical RAM.
 
-**Run** starts the calculation and greys out until it finishes; **Stop** terminates it
-early, killing ORCA's MPI workers along with the launcher. If a `.log` from a previous
-run already exists it is renamed to `.log.bak` before the new run starts, so an
-accidental click cannot destroy earlier results.
+**Run** displays **Running calculation...** in the shared status area and greys out
+until the calculation finishes. The status then shows completion, failure, or a stop
+message. **Stop** terminates ORCA and its child processes. Only one calculation can
+run at a time in an app instance.
+
+ORCA runs inside the selected working directory, so relative input references and
+scratch files stay with the job. Before rerunning an input, its existing `.log` is
+renamed to `.log.bak`, replacing any older backup. If ORCA fails to launch, the
+previous log is restored. Restarting the app preserves calculation logs; startup
+cleanup is limited to transient viewer files under `static/`.
+
+### Working with files and results
+
+Working-directory and output names must stay inside their selected directory.
+Uploads and conformer generation reject existing output names; choose a new name to
+keep both versions. **Save Text File** saves the file loaded into the editor, even if
+you subsequently select another row. Switching directories clears the editor,
+structure viewer, and loaded results.
+
+XYZ imports accept both standard XYZ (atom count, comment, then coordinates) and
+the app's legacy format (charge and multiplicity, then coordinates). Invalid elements,
+nonfinite coordinates, and mismatched atom counts are reported as errors.
+
+Result tables show orbital energies in hartree, including separate alpha and beta
+orbitals for unrestricted calculations. Available energy and frequency data can be
+displayed even when optional fields are missing. NMR multiplets use Pascal weights
+directly to keep large equivalent partner groups responsive.
+
+See [CHANGELOG.md](./CHANGELOG.md) for the changes prepared for version 0.1.11.
 
 ### Optimization and spectra are separate steps
 
@@ -198,8 +223,9 @@ pytest
 
 ### Tests
 
-Most of the suite is self-contained: it parses hand-written ORCA log text and swaps a
-stand-in for the ORCA executable, so it runs anywhere in a second or two.
+Most of the suite uses synthetic ORCA logs and stand-in processes, covering input
+generation, parsing, spectra, execution, file handling, and UI regressions. It does
+not require files from `data/`.
 
 `tests/test_orca_integration.py` additionally drives the **real** ORCA binary — it
 generates an input with the app's writers, runs it, and parses the output with the app's
@@ -213,8 +239,10 @@ ORCA_EXECUTABLE=~/orca/orca_6_1_1/orca pytest   # ORCA installed but not on PATH
 pytest -m "not orca"                            # skip them explicitly
 ```
 
-They use H2 and methane at HF/STO-3G with `nprocs 1`, so the whole file runs in ~2 s and
-needs no MPI.
+The integration tests include water single points, methane NMR, and hydrogen peroxide
+ground/excited-state optimizations and TD-DFT/ECD calculations. They use `nprocs 1`,
+so they need no MPI. Runtime depends on the installed ORCA version and hardware;
+parsing also requires a compatible cclib version.
 
 ### Editable installs
 
@@ -226,10 +254,11 @@ check a published release) also replaces the editable link with a copy — use a
 venv for that. To check which one you have:
 
 ```
-pip show orca-webui | grep -i location   # editable installs report the repo's src/ path
+python -m pip show orca-webui
 ```
 
-If it points into `site-packages`, swap it:
+Look for `Editable project location` pointing to this repository. If it is missing,
+restore the editable install:
 
 ```
 pip uninstall -y orca-webui
@@ -273,3 +302,36 @@ python -m venv orca-env
 source orca-env/bin/activate
 pip install -e ".[dev]"
 ```
+
+### Preparing version 0.1.11
+
+Version 0.1.11 is prepared in this source tree; these instructions do not imply that
+it has been published. Keep the version in `pyproject.toml` and
+`src/orca_webui/__init__.py` aligned and review [CHANGELOG.md](./CHANGELOG.md).
+
+With the development environment active, validate and build the release:
+
+```bash
+python -m pytest
+python -m build
+python -m twine check dist/orca_webui-0.1.11-py3-none-any.whl dist/orca_webui-0.1.11.tar.gz
+```
+
+Smoke-test the wheel in a separate virtual environment, leaving the source checkout
+editable for development. When ready to publish, upload only the reviewed 0.1.11
+artifacts, so older files in `dist/` are not uploaded accidentally:
+
+```bash
+python -m twine upload dist/orca_webui-0.1.11-py3-none-any.whl dist/orca_webui-0.1.11.tar.gz
+```
+
+After publication, users with a regular PyPI installation can stop the app, upgrade,
+and restart from the same directory to retain their `data/` folders:
+
+```bash
+python -m pip install --upgrade "orca-webui==0.1.11"
+orca-webui
+```
+
+For an editable source installation, use `python -m pip install -e .` after updating
+the checkout, then restart the app.

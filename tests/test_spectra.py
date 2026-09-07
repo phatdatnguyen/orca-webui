@@ -76,6 +76,44 @@ def test_nmr_spectrum_none_for_missing_element():
     assert utils.generate_nmr_spectrum_interactive(shifts_data, element_symbol="C") is None
 
 
+def test_nmr_pascal_multiplet_matches_repeated_splitting():
+    shifts = [(0, "H", 1.0), (1, "H", 3.0), (2, "H", 3.0), (3, "H", 3.0)]
+    couplings = [(0, "H", i, "H", 7.0) for i in range(1, 4)]
+    fig = utils.generate_nmr_spectrum_interactive(shifts, "H", jcouplings=couplings)
+    x = np.asarray(fig.data[0].x)
+    expected = np.zeros_like(x)
+    for shift, intensity, partners in [(1.0, 1, 3), (3.0, 3, 1)]:
+        lines = [(shift, 1.0)]
+        for _ in range(partners):
+            lines = [(p + sign * 7 / 800, weight / 2) for p, weight in lines for sign in (-1, 1)]
+        for pos, weight in lines:
+            expected += intensity * weight * utils.lorentzian_nmr(x, pos, 0.5 / 400)
+    expected /= expected.max()
+    np.testing.assert_allclose(fig.data[0].y, expected, atol=1e-12)
+
+
+def test_nmr_large_partner_group_uses_distinct_pascal_lines(monkeypatch):
+    shifts = [(0, "H", 1.0)] + [(i, "H", 3.0) for i in range(1, 13)]
+    couplings = [(0, "H", i, "H", 7.0) for i in range(1, 13)]
+    real_lorentzian = utils.lorentzian_nmr
+    calls = []
+
+    def count_lines(x, pos, width):
+        calls.append(pos)
+        return real_lorentzian(x, pos, width)
+
+    monkeypatch.setattr(utils, "lorentzian_nmr", count_lines)
+    fig = utils.generate_nmr_spectrum_interactive(shifts, "H", points=100,
+                                                  jcouplings=couplings)
+    assert len(calls) == 13 + 2
+    assert np.isfinite(fig.data[0].y).all()
+
+
+def test_nmr_manual_range_keeps_descending_chemical_shift_axis():
+    fig = utils.generate_nmr_spectrum_interactive([(0, "H", 1.0)], "H", plot_range=(0, 4))
+    assert tuple(fig.layout.xaxis.range) == (4, 0)
+
+
 # --- ECD spectrum ------------------------------------------------------------
 
 def test_ecd_spectrum_returns_figure():

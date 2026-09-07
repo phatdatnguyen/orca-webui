@@ -5,17 +5,17 @@ conditionally reveals accordions — Energy/MOs, Geometry Optimization, Frequenc
 Absorption/Emission (TD-DFT), and NMR — based on what data is present. The NMR path
 also runs the shielding -> chemical-shift -> multiplet pipeline from ``utils``.
 """
-import os
-import time
+from html import escape
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
 from matplotlib.ticker import ScalarFormatter
 import gradio as gr
 import cclib
-from .utils import get_files_in_working_directory, generate_ir_spectrum_interactive, generate_absorption_emission_spectrum_interactive, generate_ecd_spectrum_interactive, parse_nmr_shielding_constants, parse_nmr_jcouplings, calculate_chemical_shifts, generate_nmr_spectrum_interactive, compute_hydrogen_equivalence, compute_carbon_equivalence, build_nmr_peak_table, multiplicity_label, format_jcouplings_by_atom, parse_orca_geometry
+from cclib.parser.utils import convertor
+from .utils import get_files_in_working_directory, resolve_working_file, generate_ir_spectrum_interactive, generate_absorption_emission_spectrum_interactive, generate_ecd_spectrum_interactive, parse_nmr_shielding_constants, parse_nmr_jcouplings, calculate_chemical_shifts, generate_nmr_spectrum_interactive, compute_hydrogen_equivalence, compute_carbon_equivalence, build_nmr_peak_table, multiplicity_label, format_jcouplings_by_atom, parse_orca_geometry
 
-def on_working_directory_file_list_change(working_directory_file_list):
+def on_working_directory_file_list_change(working_directory_file_list, selected_result=None):
     """Repopulate the result-file dropdown with the ``.log`` files in the directory.
 
     The file-list state is ``None`` until a working directory is opened, so it is
@@ -23,14 +23,32 @@ def on_working_directory_file_list_change(working_directory_file_list):
     (case-insensitively) rather than left in ``os.listdir`` order.
     """
     output_file_names = sorted((f for f in (working_directory_file_list or []) if f.endswith('.log')), key=str.lower)
-    return gr.update(choices=output_file_names, value=output_file_names[0] if len(output_file_names) > 0 else None, interactive=True)
+    selected_result = selected_result if selected_result in output_file_names else (output_file_names[0] if output_file_names else None)
+    return gr.update(choices=output_file_names, value=selected_result, interactive=True)
 
 def _parse_reference(value, default):
     """Parse a reference-shielding textbox value to float, falling back on blanks/errors."""
     try:
-        return float(value)
+        reference = float(value)
+        return reference if np.isfinite(reference) else default
     except (TypeError, ValueError):
         return default
+
+
+def _empty_result_outputs(status=""):
+    """Clear cached data and displayed results with the loader's output layout."""
+    return status, None, \
+           gr.update(visible=False), "", "", None, \
+           gr.update(visible=False), None, \
+           gr.update(visible=False), None, None, None, gr.update(interactive=False), \
+           gr.update(visible=False), None, None, gr.update(interactive=False), gr.update(interactive=False), \
+           gr.update(visible=False), None, None, None, None, None, gr.update(interactive=False)
+
+
+def on_working_directory_change():
+    """Prevent results from the previous directory being exported into a new one."""
+    return _empty_result_outputs()
+
 
 def on_load_result_file(working_directory_path, calculation_result_file_name, h_reference="32.9", c_reference="203.4", show_equivalent=True):
     """Load an ORCA result ``.log`` and produce all Result-tab outputs.
@@ -46,8 +64,10 @@ def on_load_result_file(working_directory_path, calculation_result_file_name, h_
     returns a matching tuple that hides every accordion and reports the error.
     """
     try:
-        calculation_result_file_path = os.path.join(working_directory_path, calculation_result_file_name)
+        calculation_result_file_path = resolve_working_file(working_directory_path, calculation_result_file_name)
         parser = cclib.io.ccopen(calculation_result_file_path)
+        if parser is None:
+            raise ValueError("This file is not a recognized computational chemistry output.")
         try:
             data = parser.parse()
         except Exception as parse_exc:
@@ -63,64 +83,69 @@ def on_load_result_file(working_directory_path, calculation_result_file_name, h_
             ) from parse_exc
 
         # Display energy result
-        if hasattr(data, "scfenergies") and hasattr(data, "moenergies"):
-            show_enery_result = True
-            energy = data.scfenergies[-1] / 27.2114 # in unit hartree
+        scf_energies = getattr(data, "scfenergies", None)
+        mo_energies = getattr(data, "moenergies", None)
+        has_scf_energies = scf_energies is not None and len(scf_energies) > 0
+        has_mo_energies = mo_energies is not None and len(mo_energies) > 0
+        show_energy_result = has_scf_energies or has_mo_energies
+        energy_text = ""
+        dipole_moment_text = ""
+        MO_df = None
+        if has_scf_energies:
+            energy = convertor(scf_energies[-1], "eV", "hartree")
             energy_text = '{:.4f} (hartree)'.format(energy)
-            if hasattr(data, "moments"):
-                dipole_moment = data.moments[1]
-                dipole_magnitude = (dipole_moment[0]**2 + dipole_moment[1]**2 + dipole_moment[2]**2) ** 0.5
-                dipole_moment_text = "{:.4f} (Debye)".format(dipole_magnitude)
-            else:
-                dipole_moment_text = ""
-
-            visualization_dropdown_choices=["Electron density", "Electrostatic potential"]
-            MO_energies = data.moenergies
-            if MO_energies is not None:
-                MO_rows = []
-                for i, MO_energy in enumerate(MO_energies[0]):
-                    label = f"MO {i+1} (HOMO)" if i in data.homos else f"MO {i+1}"
-                    MO_rows.append({"Molecular orbital": label, "Energy (hartree)": "{:.4f}".format(MO_energy)})
-                    visualization_dropdown_choices.append(f"MO {i+1}")
-                MO_df = pd.DataFrame(MO_rows, columns=["Molecular orbital", "Energy (hartree)"])
-            else:
-                MO_df = None
-        else:
-            show_enery_result = False
-            energy_text = ""
-            dipole_moment_text = ""
-            MO_df = None
+        moments = getattr(data, "moments", None)
+        if moments is not None and len(moments) > 1:
+            dipole_moment_text = "{:.4f} (Debye)".format(np.linalg.norm(moments[1]))
+        if has_mo_energies:
+            MO_rows = []
+            homos = getattr(data, "homos", [])
+            for spin, orbital_energies in enumerate(mo_energies):
+                for i, orbital_energy in enumerate(orbital_energies):
+                    label = f"MO {i+1}"
+                    if len(mo_energies) > 1:
+                        label += " (alpha)" if spin == 0 else " (beta)"
+                    if spin < len(homos) and i == homos[spin]:
+                        label += " (HOMO)"
+                    MO_rows.append({"Molecular orbital": label, "Energy (hartree)":
+                                    "{:.4f}".format(convertor(orbital_energy, "eV", "hartree"))})
+            MO_df = pd.DataFrame(MO_rows, columns=["Molecular orbital", "Energy (hartree)"])
 
         # Display geometry optimization result
-        if hasattr(data, "scfenergies") and len(data.scfenergies) > 1:
+        if has_scf_energies and len(scf_energies) > 1:
             show_geometry_optimization = True
-            scf_energies = [x / 27.2114 for x in data.scfenergies]
-            energy_plot = plt.figure()
-            plt.plot(range(1, len(scf_energies) + 1), scf_energies, 'k')
-            plt.xlabel("Conformer")
-            plt.ylabel("Energy (hartree)")
-            plt.title("SCF Energy")
-            ax = plt.gca()
+            # Avoid pyplot's global figure registry, which retained a figure for
+            # every result load/refresh and also mixed concurrent sessions' plots.
+            energy_plot = Figure()
+            ax = energy_plot.subplots()
+            ax.plot(range(1, len(scf_energies) + 1),
+                    convertor(np.asarray(scf_energies), "eV", "hartree"), 'k')
+            ax.set_xlabel("Optimization step")
+            ax.set_ylabel("Energy (hartree)")
+            ax.set_title("SCF Energy")
             ax.yaxis.set_major_formatter(ScalarFormatter(useOffset=False))
-            plt.tight_layout()
+            energy_plot.tight_layout()
         else:
             show_geometry_optimization = False
             energy_plot = None
         
         # Display frequency result
-        if hasattr(data, "vibfreqs"):
+        frequencies = getattr(data, "vibfreqs", None)
+        if frequencies is not None and len(frequencies) > 0:
             show_frequency = True
-            frequencies = data.vibfreqs
-            intensities = data.vibirs
+            intensities = getattr(data, "vibirs", None)
+            has_intensities = intensities is not None and len(intensities) == len(frequencies)
             
             ir_df = pd.DataFrame({
                 "Frequencies": frequencies,
-                "Intensity": intensities
+                "Intensity": intensities if has_intensities else np.full(len(frequencies), np.nan)
             })
             
-            ir_spectrum = generate_ir_spectrum_interactive(frequencies, intensities, width=12.0, transmittance=True)
+            ir_spectrum = (generate_ir_spectrum_interactive(frequencies, intensities, width=12.0, transmittance=True)
+                           if has_intensities else None)
 
-            thero_df = pd.DataFrame([["{:.4f}".format(data.zpve), "{:.4f}".format(data.enthalpy), "{:.4f}".format(data.entropy), "{:.4f}".format(data.freeenergy)]],
+            thermo_values = [getattr(data, name, None) for name in ("zpve", "enthalpy", "entropy", "freeenergy")]
+            thero_df = pd.DataFrame([["{:.4f}".format(value) if value is not None else "" for value in thermo_values]],
                                     columns=["Zero-point potential energy", "Enthalpy", "Entropy", "Gibbs free energy"])
         else:
             show_frequency = False
@@ -270,19 +295,51 @@ def on_load_result_file(working_directory_path, calculation_result_file_name, h_
 
         status = f"Result file loaded."
         return f"<span style='color:green;'>{status}</span>", data, \
-               gr.update(visible=show_enery_result), energy_text, dipole_moment_text, MO_df, \
+               gr.update(visible=show_energy_result), energy_text, dipole_moment_text, MO_df, \
                gr.update(visible=show_geometry_optimization), energy_plot, \
                gr.update(visible=show_frequency), ir_df, ir_spectrum, thero_df, gr.update(interactive=show_frequency), \
                gr.update(visible=show_absorption_emission or show_ecd), None, None, gr.update(interactive=show_absorption_emission or show_ecd), gr.update(interactive=show_ecd), \
                gr.update(visible=show_nmr), nmr_df, gr.update(value=nmr_multiplet_df, visible=show_averaged_tables), nmr_spectrum_1H, nmr_spectrum_13C, gr.update(value=nmr_multiplet_13C_df, visible=show_averaged_tables), gr.update(interactive=show_nmr)
     except Exception as exc:
         status = f"Error loading result file: {exc}"
-        return f"<span style='color:red;'>{status}</span>", None, \
-               gr.update(visible=False), "", "", None, \
-               gr.update(visible=False), None, \
-               gr.update(visible=False), None, None, None, gr.update(interactive=False), \
-               gr.update(visible=False), None, None, gr.update(interactive=False), gr.update(interactive=False), \
-               gr.update(visible=False), None, None, None, None, None, gr.update(interactive=False)
+        return _empty_result_outputs(f"<span style='color:red;'>{escape(status)}</span>")
+
+def _transition_metadata(data, state_count):
+    """Keep optional cclib configuration/symmetry data aligned to the states."""
+    configurations = getattr(data, "etsecs", None)
+    symmetries = getattr(data, "etsyms", None)
+    transition_texts = []
+    symmetry_texts = []
+    for i in range(state_count):
+        state_configurations = configurations[i] if configurations is not None and i < len(configurations) else []
+        transition_texts.append("\n".join(
+            f"{start[0] + 1} -> {end[0] + 1} (coefficient: {coefficient:.4f})"
+            for start, end, coefficient in state_configurations))
+        symmetry_texts.append(symmetries[i] if symmetries is not None and i < len(symmetries) else "")
+    return transition_texts, symmetry_texts
+
+
+def _electronic_transitions(data, strength_attribute):
+    """Return matching finite transition arrays, or report unusable partial data."""
+    energies = getattr(data, "etenergies", None)
+    strengths = getattr(data, strength_attribute, None)
+    if energies is None or strengths is None:
+        return None
+    try:
+        energies = np.asarray(energies, dtype=float)
+        strengths = np.asarray(strengths, dtype=float)
+        if energies.size == 0 and strengths.size == 0:
+            return None
+        if (energies.ndim != 1 or strengths.ndim != 1 or len(energies) != len(strengths)
+                or not np.all(np.isfinite(energies)) or not np.all(np.isfinite(strengths))
+                or np.any(energies <= 0)):
+            raise ValueError("Transition energies and strengths must have matching lengths, "
+                             "finite values, and positive energies.")
+    except (TypeError, ValueError) as exc:
+        gr.Warning(f"Cannot show spectrum: {exc}")
+        return None
+    return energies, strengths
+
 
 def on_show_absorption_spectrum(data):
     """Build the absorption peak table + UV-Vis spectrum from a parsed TD-DFT result.
@@ -291,27 +348,19 @@ def on_show_absorption_spectrum(data):
     Returns ``(peak_dataframe, spectrum_figure)`` for every excited state, or
     ``(None, None)`` when the result has no electronic transitions.
     """
-    if hasattr(data, 'etenergies') and hasattr(data, 'etoscs'):
+    transitions = _electronic_transitions(data, "etoscs")
+    if transitions is not None:
         # etenergies in cm^(-1), etoscs are dimensionless
-        energies_wavenumber = np.array(data.etenergies)
-        oscs = np.array(data.etoscs)
+        energies_wavenumber, oscs = transitions
         
-        # Convert energies to wavelength (eV to nm)
+        # Convert wavenumbers (cm^-1) to wavelength (nm).
         wavelengths = 1e7 / energies_wavenumber
                     
         # Build spectrum
         absorption_spectrum = generate_absorption_emission_spectrum_interactive(wavelengths=wavelengths, oscs=oscs, points=10000, plot_range=(0, 800))
 
         # Build peak dataframe
-        configurations_list = data.etsecs
-        configurations_str_list = []
-        for configurations in configurations_list:
-            transitions_str_list = []
-            for transition_begin, transition_end, coefficient in configurations:
-                transitions_str_list.append(f"{transition_begin[0]} -> {transition_end[0]} (coefficient: {coefficient:.4f})")
-            transitions_str = "\n".join(transitions_str_list)
-            configurations_str_list.append(transitions_str)
-        symmetry_list = [symmetry for symmetry in data.etsyms]
+        configurations_str_list, symmetry_list = _transition_metadata(data, len(wavelengths))
         peak_df = pd.DataFrame({
             "Absorption Wavelength (nm)": np.round(wavelengths, 4),
             "Oscillator Strength": oscs,
@@ -334,12 +383,12 @@ def on_show_ecd_spectrum(data):
     Returns ``(peak_dataframe, spectrum_figure)``, or ``(None, None)`` when the result
     has no rotatory strengths.
     """
-    if not (hasattr(data, 'etenergies') and hasattr(data, 'etrotats')):
+    transitions = _electronic_transitions(data, "etrotats")
+    if transitions is None:
         return None, None
 
     # etenergies in cm^(-1); etrotats are signed rotatory strengths in 1e-40 cgs.
-    energies_wavenumber = np.array(data.etenergies)
-    rotatory_strengths = np.array(data.etrotats)
+    energies_wavenumber, rotatory_strengths = transitions
     wavelengths = 1e7 / energies_wavenumber
 
     # Start the axis above 0 nm: the spectrum is broadened in wavenumber space, and
@@ -348,23 +397,22 @@ def on_show_ecd_spectrum(data):
         wavelengths=wavelengths, rotatory_strengths=rotatory_strengths,
         points=10000, plot_range=(100, 800))
 
-    configurations_str_list = []
-    for configurations in data.etsecs:
-        transitions_str_list = []
-        for transition_begin, transition_end, coefficient in configurations:
-            transitions_str_list.append(f"{transition_begin[0]} -> {transition_end[0]} (coefficient: {coefficient:.4f})")
-        configurations_str_list.append("\n".join(transitions_str_list))
+    configurations_str_list, symmetry_list = _transition_metadata(data, len(wavelengths))
 
     # Oscillator strengths come from the same run, so show them alongside: a large |R|
     # on a transition with negligible f is not an observable ECD band.
-    oscs = np.array(data.etoscs) if hasattr(data, 'etoscs') else np.full(len(wavelengths), np.nan)
+    oscs = np.full(len(wavelengths), np.nan)
+    parsed_oscs = getattr(data, "etoscs", None)
+    if parsed_oscs is not None:
+        count = min(len(parsed_oscs), len(oscs))
+        oscs[:count] = parsed_oscs[:count]
 
     peak_df = pd.DataFrame({
         "Wavelength (nm)": np.round(wavelengths, 4),
         "Rotatory Strength (1e-40 cgs)": np.round(rotatory_strengths, 5),
         "Oscillator Strength": oscs,
         "Transitions": configurations_str_list,
-        "Symmetry": [symmetry for symmetry in data.etsyms]
+        "Symmetry": symmetry_list
     })
     peak_df = peak_df.sort_values("Wavelength (nm)").reset_index(drop=True)
 
@@ -377,27 +425,23 @@ def on_show_emission_spectrum(data):
     unit oscillator strength. Returns ``(peak_dataframe, spectrum_figure)``, or
     ``(None, None)`` when the result has no electronic transitions.
     """
-    if hasattr(data, 'etenergies') and hasattr(data, 'etoscs'):
+    transitions = _electronic_transitions(data, "etoscs")
+    if transitions is not None:
         # etenergies in cm^(-1), etoscs are dimensionless
-        energies_wavenumber = np.array(data.etenergies)
+        energies_wavenumber, _ = transitions
 
         # Keep only the lowest energy transition only (S1 -> S0)
         energies_wavenumber = np.array([energies_wavenumber[0]])
         oscs = np.array([1]) # set osc to 1 for the emission peak
 
-        # Convert energies to wavelength (eV to nm)
+        # Convert wavenumbers (cm^-1) to wavelength (nm).
         wavelengths = 1e7 / energies_wavenumber
 
         # Build spectrum
         emission_spectrum = generate_absorption_emission_spectrum_interactive(wavelengths=wavelengths, oscs=oscs, points=10000, plot_range=(0, 800))
 
         # Build peak dataframe
-        configurations = data.etsecs[0]
-        transitions_str_list = []
-        for transition_begin, transition_end, coefficient in configurations:
-            transitions_str_list.append(f"{transition_begin[0]} -> {transition_end[0]} (coefficient: {coefficient:.4f})")
-        transitions_str = "\n".join(transitions_str_list)
-        symmetry = data.etsyms[0]
+        transitions_str, symmetry = _transition_metadata(data, 1)
         peak_df = pd.DataFrame({
             "Emission Wavelength (nm)": np.round(wavelengths, 4),
             "Oscillator Strength": oscs,
@@ -418,13 +462,17 @@ def on_export_data(working_directory_path, file_name, df):
     Returns ``(status_html, file_list)``; errors are reported in the status span.
     """
     try:
-        file_path = os.path.join(working_directory_path, file_name + ".csv")
+        if not isinstance(file_name, str) or not file_name.strip():
+            raise ValueError("Enter a file name for the exported data.")
+        file_path = resolve_working_file(working_directory_path, file_name + ".csv")
+        if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+            raise ValueError("There is no result data to export. Load a result and show its data first.")
         df.to_csv(file_path, encoding='utf-8', index=False)
-        status = "Data exported succesfully."
+        status = "Data exported successfully."
         return f"<span style='color:green;'>{status}</span>", get_files_in_working_directory(working_directory_path)
     except Exception as exc:
         status = f"Error exporting data: {exc}"
-        return f"<span style='color:red;'>{status}</span>", get_files_in_working_directory(working_directory_path)
+        return f"<span style='color:red;'>{escape(status)}</span>", get_files_in_working_directory(working_directory_path)
 
 def result_tab_content(working_directory_path_state, working_directory_file_list_state, status_markdown):
     """Build the "Result" tab (all result accordions) and wire its events.
@@ -495,13 +543,16 @@ def result_tab_content(working_directory_path_state, working_directory_file_list
                     with gr.Row():
                         nmr_multiplet_13C_dataframe = gr.DataFrame(label="Averaged 13C signals")
     
-    working_directory_file_list_state.change(on_working_directory_file_list_change, working_directory_file_list_state, calculation_result_file_dropdown)
+    working_directory_file_list_state.change(on_working_directory_file_list_change,
+                                             [working_directory_file_list_state, calculation_result_file_dropdown],
+                                             calculation_result_file_dropdown)
     nmr_result_outputs = [status_markdown, data_state,
                           energy_result_accordion, energy_texbox, dipole_moment_texbox, mo_dataframe,
                           opt_result_accordion, energy_plot,
                           frequency_result_accordion, ir_dataframe, ir_spectrum_plot, thermo_dataframe, export_ir_button,
                           absorption_emission_result_accordion, peak_dataframe, absorption_emisson_spectrum_plot, export_peak_button, ecd_spectrum_button,
                           nmr_result_accordion, nmr_dataframe, nmr_multiplet_dataframe, nmr_spectrum_1H, nmr_spectrum_13C, nmr_multiplet_13C_dataframe, export_nmr_button]
+    working_directory_path_state.change(on_working_directory_change, None, nmr_result_outputs)
     load_button.click(on_load_result_file,
                       [working_directory_path_state, calculation_result_file_dropdown, h_reference_textbox, c_reference_textbox, show_equivalent_checkbox],
                       nmr_result_outputs)

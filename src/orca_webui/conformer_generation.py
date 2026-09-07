@@ -1,10 +1,15 @@
 import os
+import math
+from html import escape
 import pandas as pd
 from rdkit import Chem
 from rdkit.Chem import AllChem, rdMolAlign
 import gradio as gr
-from gradio_molecule2d import molecule2d
-from .utils import get_files_in_working_directory, conformer_to_xyz_file
+try:
+    from gradio_molecule2d import molecule2d
+except ImportError:
+    molecule2d = None
+from .utils import get_files_in_working_directory, conformer_to_xyz_file, resolve_working_file
 
 # maximum number of embedding rounds before giving up on reaching the requested count
 MAX_EMBEDDING_ROUNDS = 10
@@ -15,6 +20,8 @@ OVERSAMPLING_FACTOR = 4
 MAX_BATCH_SIZE = 250
 
 def on_draw_molecule(molecule_editor):
+    if not isinstance(molecule_editor, str) or not molecule_editor.strip():
+        return ""
     mol = Chem.MolFromSmiles(molecule_editor)
     if mol is None:
         return ""
@@ -29,9 +36,12 @@ def optimize_conformers(mol):
     if mmff_properties is not None:
         results = AllChem.MMFFOptimizeMoleculeConfs(mol, maxIters=1000, numThreads=0)
     else:
+        if not AllChem.UFFHasAllMoleculeParams(mol):
+            raise ValueError("This molecule has atoms unsupported by both MMFF94 and UFF.")
         results = AllChem.UFFOptimizeMoleculeConfs(mol, maxIters=1000, numThreads=0)
 
-    return [energy for _, energy in results]
+    return [energy if status == 0 and math.isfinite(energy) else None
+            for status, energy in results]
 
 def is_duplicate_conformer(energy, conf_id, kept, candidate_heavy_mol, kept_heavy_mol, energy_threshold, rms_threshold):
     # A candidate is a duplicate of an accepted conformer only when it is both close in energy and
@@ -80,6 +90,8 @@ def generate_unique_conformers(mol, num_confs, energy_threshold, rms_threshold, 
 
         num_accepted_this_round = 0
         for conformer, energy in zip(candidate_mol.GetConformers(), energies):
+            if energy is None:
+                continue  # An unconverged geometry does not have a reliable minimum energy.
             conf_id = conformer.GetId()
             if is_duplicate_conformer(energy, conf_id, kept, candidate_heavy_mol, kept_heavy_mol, energy_threshold, rms_threshold):
                 num_discarded += 1
@@ -102,28 +114,44 @@ def generate_unique_conformers(mol, num_confs, energy_threshold, rms_threshold, 
 def on_generate_conformers(working_directory_path, input_smiles, charge, multiplicity, num_confs, energy_threshold, rms_threshold, file_name, file_type, progress=gr.Progress()):
     empty_dataframe = pd.DataFrame(columns=["ID", "Energy (kcal/mol)"])
     try:
+        # Validate paths before embedding so missing directories and name collisions
+        # are reported before doing an expensive conformer search.
+        if file_type not in {"xyz", "pdb", "mol"}:
+            raise ValueError("Select an XYZ, PDB, or MOL output format.")
+        if not isinstance(file_name, str) or not file_name.strip():
+            raise ValueError("Please enter a file name.")
+        file_name = file_name.strip()
+        resolve_working_file(working_directory_path, file_name)
+        if isinstance(num_confs, bool) or not float(num_confs).is_integer() or not 1 <= num_confs <= 100:
+            raise ValueError("The number of conformers must be an integer between 1 and 100.")
+        num_confs = int(num_confs)
+        if any(not math.isfinite(value) or value < 0 for value in (energy_threshold, rms_threshold)):
+            raise ValueError("Energy and RMSD thresholds must be finite, nonnegative numbers.")
+        for index in range(1, num_confs + 1):
+            destination = resolve_working_file(working_directory_path, f"{file_name}_{index}.{file_type}")
+            if os.path.lexists(destination):
+                raise ValueError(f"{os.path.basename(destination)} already exists. Choose a different file name.")
         mol = Chem.MolFromSmiles(input_smiles)
-        if mol is None:
+        if mol is None or mol.GetNumAtoms() == 0:
             raise ValueError(f'invalid SMILES "{input_smiles}"')
         mol = Chem.AddHs(mol)
 
         # Generate conformers, removing the duplicates and replacing them by new ones
         unique_mol, conformers, num_discarded = generate_unique_conformers(mol, num_confs, energy_threshold, rms_threshold, progress)
+        if not conformers:
+            raise ValueError("No conformers could be embedded and optimized for this molecule.")
 
         conformer_rows = []
         for index, (energy, conf_id) in enumerate(progress.tqdm(conformers, total=len(conformers), desc="Writing")):
             conformer_id = index + 1
             # Create a unique file name for each conformer
-            conf_file_path = os.path.join(working_directory_path, f'{file_name}_{conformer_id}')
+            conf_file_path = resolve_working_file(working_directory_path, f'{file_name}_{conformer_id}.{file_type}')
             # Write conformers geometry to file
             if file_type == 'xyz':
-                conf_file_path += '.xyz'
                 conformer_to_xyz_file(unique_mol, conf_id, conf_file_path, charge, multiplicity)
             elif file_type == 'pdb':
-                conf_file_path += '.pdb'
                 Chem.MolToPDBFile(unique_mol, conf_file_path, confId=conf_id)
             else: # file_type_dropdown == 'mol'
-                conf_file_path += '.mol'
                 Chem.MolToMolFile(unique_mol, conf_file_path, confId=conf_id)
             conformer_rows.append([conformer_id, round(energy, 4)])
 
@@ -131,12 +159,12 @@ def on_generate_conformers(working_directory_path, input_smiles, charge, multipl
 
         status = f'{len(conformer_rows)} conformers generated, {num_discarded} duplicates discarded.'
         if len(conformer_rows) < num_confs:
-            status += f' The molecule has no more conformations that differ by at least {energy_threshold} kcal/mol and {rms_threshold} A RMSD, lower the thresholds to keep more.'
+            status += ' The search did not find the requested number of unique, optimized conformers. Lowering the thresholds may keep more.'
             return f"<span style='color:orange;'>{status}</span>", get_files_in_working_directory(working_directory_path), conformer_dataframe
         return f"<span style='color:green;'>{status}</span>", get_files_in_working_directory(working_directory_path), conformer_dataframe
     except Exception as exc:
         status = f'Error generating conformers: {exc}'
-        return f"<span style='color:red;'>{status}</span>", get_files_in_working_directory(working_directory_path), empty_dataframe
+        return f"<span style='color:red;'>{escape(status)}</span>", get_files_in_working_directory(working_directory_path), empty_dataframe
 
 def show_selected_file(selected_file):
     gr.Warning(selected_file)
@@ -147,7 +175,9 @@ def conformer_generation_tab_content(working_directory_path_state, working_direc
         with gr.Row():
             with gr.Column(scale=2):
                 with gr.Accordion("Molecular Structure"):
-                    molecule_editor = molecule2d(label="Molecule")
+                    molecule_editor = molecule2d(label="Molecule") if molecule2d is not None else None
+                    if molecule_editor is None:
+                        gr.Markdown("Enter the molecular structure as SMILES to generate conformers.")
             with gr.Column(scale=1):
                 with gr.Accordion("Generate Conformers"):
                     input_smiles_texbox = gr.Textbox(label="SMILES")
@@ -162,7 +192,8 @@ def conformer_generation_tab_content(working_directory_path_state, working_direc
                     status_markdown = gr.Markdown()
                     conformer_dataframe = gr.Dataframe(label="Generated conformers", headers=["ID", "Energy (kcal/mol)"], datatype=["number", "number"], max_height=360, interactive=False)
 
-    molecule_editor.change(on_draw_molecule, molecule_editor, input_smiles_texbox)
+    if molecule_editor is not None:
+        molecule_editor.change(on_draw_molecule, molecule_editor, input_smiles_texbox)
     generate_button.click(on_generate_conformers, [working_directory_path_state, input_smiles_texbox, charge_slider, multiplicity_dropdown, num_confs_slider, energy_threshold_slider, rms_threshold_slider, file_name_textbox, file_type_dropdown], [status_markdown, working_directory_file_list_state, conformer_dataframe])
 
     return conformer_generation_tab

@@ -1,6 +1,7 @@
 """Tests for molecule I/O helpers: xyz round-trip, bond perception, file listing."""
 import os
 
+import numpy as np
 import pytest
 from rdkit import Chem
 from rdkit.Chem import AllChem
@@ -18,6 +19,39 @@ def test_get_files_excludes_zone_identifier(tmp_path):
     assert "a.xyz" in files
     assert "b.inp" in files
     assert all(not f.endswith("Zone.Identifier") for f in files)
+
+
+def test_get_files_ignores_directories_and_external_symlinks(tmp_path):
+    directory = tmp_path / "work"
+    directory.mkdir()
+    (directory / "subfolder.xyz").mkdir()
+    (directory / "water.xyz").write_text("data")
+    outside = tmp_path / "outside.xyz"
+    outside.write_text("private")
+    (directory / "linked.xyz").symlink_to(outside)
+    assert utils.get_files_in_working_directory(directory) == ["water.xyz"]
+
+
+def test_get_files_tolerates_a_removed_directory(tmp_path):
+    assert utils.get_files_in_working_directory(tmp_path / "missing") == []
+    file_path = tmp_path / "file"
+    file_path.write_text("data")
+    assert utils.get_files_in_working_directory(file_path) == []
+
+
+@pytest.mark.parametrize("name", [None, "", "..", "../outside.inp", "/tmp/outside.inp", r"..\outside.inp"])
+def test_resolve_working_file_rejects_paths(tmp_path, name):
+    with pytest.raises(ValueError):
+        utils.resolve_working_file(tmp_path, name)
+
+
+def test_resolve_working_file_rejects_external_symlink(tmp_path):
+    directory = tmp_path / "work"
+    directory.mkdir()
+    (directory / "out.inp").symlink_to(tmp_path / "outside.inp")
+    with pytest.raises(ValueError, match="outside"):
+        utils.resolve_working_file(directory, "out.inp")
+    assert utils.resolve_working_file(directory, "safe.inp") == str(directory / "safe.inp")
 
 
 # --- conformer_to_xyz_file + mol_from_xyz_file round trip --------------------
@@ -61,6 +95,35 @@ def test_xyz_defaults_charge_multiplicity_when_absent(tmp_path):
     mol, charge, mult = utils.mol_from_xyz_file(str(path), return_charge_and_multiplicity=True)
     assert (charge, mult) == (0, 1)
     assert mol.GetNumAtoms() == 3
+
+
+@pytest.mark.parametrize("comment", ["This is a molecule", "C 1.0 2.0 3.0"])
+def test_standard_xyz_never_treats_comment_as_an_atom(tmp_path, comment):
+    path = tmp_path / "water.xyz"
+    path.write_text(f"3\n{comment}\nO 0 0 0\nH 0.96 0 0\nH -0.24 0.93 0\n")
+    mol = utils.mol_from_xyz_file(path)
+    assert [atom.GetSymbol() for atom in mol.GetAtoms()] == ["O", "H", "H"]
+    np.testing.assert_allclose(mol.GetConformer().GetPositions()[0], [0, 0, 0])
+
+
+@pytest.mark.parametrize("text", [
+    "", "3\nwater\nO 0 0 0\nH 0.96 0 0\n", "1\nwater\nO 0 0\n",
+    "0 1\nO 0 0\nH 0.96 0 0\n", "1\nwater\nO nan 0 0\n",
+    "0 1\nQq 0 0 0\nH 0 0 1\n",
+])
+def test_xyz_rejects_empty_truncated_or_invalid_coordinates(tmp_path, text):
+    path = tmp_path / "invalid.xyz"
+    path.write_text(text)
+    with pytest.raises(ValueError):
+        utils.mol_from_xyz_file(path)
+
+
+def test_legacy_xyz_accepts_optional_comment(tmp_path):
+    path = tmp_path / "legacy.xyz"
+    path.write_text("-1 2\nThis is a comment\nH 0 0 0\n")
+    mol, charge, mult = utils.mol_from_xyz_file(path, return_charge_and_multiplicity=True)
+    assert mol.GetNumAtoms() == 1
+    assert (charge, mult) == (-1, 2)
 
 
 # --- add_bonds ---------------------------------------------------------------
@@ -185,3 +248,18 @@ def test_mol_from_orca_geometry_keeps_coordinates(tmp_path, nmr_log_text):
     for i, (x, y, z) in enumerate(coords):
         pos = conf.GetAtomPosition(i)
         assert abs(pos.x - x) < 1e-6 and abs(pos.y - y) < 1e-6 and abs(pos.z - z) < 1e-6
+
+
+def test_structure_log_without_orca_geometry_uses_parser_fallback(tmp_path, monkeypatch, water_mol):
+    log = tmp_path / "other.log"
+    log.write_text("Output without an ORCA Cartesian coordinate block\n")
+    monkeypatch.setattr(utils, "mol_from_orca_file", lambda path: water_mol)
+    mol = utils.mol_from_structure_file(log)
+    assert mol.GetNumAtoms() == 3
+
+
+def test_missing_orca_geometry_is_an_error(tmp_path):
+    log = tmp_path / "empty.log"
+    log.write_text("No coordinates\n")
+    with pytest.raises(ValueError, match="No ORCA Cartesian"):
+        utils.mol_from_orca_geometry(log)
