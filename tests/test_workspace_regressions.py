@@ -139,22 +139,34 @@ def test_structure_viewers_do_not_overwrite_each_other_or_follow_old_symlink(tmp
     assert outside.read_text() == "keep"
 
 
-def test_app_builds_without_optional_molecule_editor_and_with_alternate_root(tmp_path):
-    # Simulate an ordinary pip install: gradio_molecule2d is intentionally optional.
+def test_app_builds_with_bundled_editor_and_alternate_root(tmp_path):
+    # Build from the source checkout, with runtime files outside the launch directory.
     script = """
 import sys
-sys.modules['gradio_molecule2d'] = None
 sys.path.insert(0, sys.argv[2])
 from pathlib import Path
-from orca_webui import app, conformer_generation
-assert conformer_generation.molecule2d is None
+from fastapi.staticfiles import StaticFiles
+from orca_webui import app, molecular_editor
 original = app.working_directory_blocks
 def checked_blocks(*, base_path, static_dir):
     assert base_path == Path(sys.argv[1]) / 'data'
     assert static_dir == Path(sys.argv[1]) / 'static'
     return original(base_path=base_path, static_dir=static_dir)
 app.working_directory_blocks = checked_blocks
-app.build_app(Path(sys.argv[1]))
+application = app.build_app(Path(sys.argv[1]))
+editor_mount = next(route for route in application.routes if route.path == '/molecule-editor')
+assert isinstance(editor_mount.app, StaticFiles)
+assert Path(editor_mount.app.directory) == molecular_editor.KETCHER_DIR
+assert (molecular_editor.KETCHER_DIR / 'index.html').is_file()
+gradio_mount = application.routes[-1]
+assert gradio_mount.path == ''
+assert application.routes.index(editor_mount) < application.routes.index(gradio_mount)
+blocks = gradio_mount.app.get_blocks()
+assert app._STYLES_PATH.read_text() in blocks.css
+editor = next(block for block in blocks.blocks.values()
+              if getattr(block, 'elem_id', None) == 'molecular-editor')
+assert editor.value == {'smiles': '', 'load_id': None}
+assert callable(molecular_editor.smiles_from_editor)
 """
     run_root = tmp_path / "run"
     source_root = Path(__file__).resolve().parents[1] / "src"
@@ -220,5 +232,6 @@ def test_unconverged_conformers_are_not_written(tmp_path, monkeypatch):
 
 
 def test_empty_editor_is_safe():
-    assert conformer_generation.on_draw_molecule(None) == ""
-    assert conformer_generation.on_draw_molecule("") == ""
+    from orca_webui.molecular_editor import smiles_from_editor
+
+    assert smiles_from_editor({"smiles": ""}) == ""

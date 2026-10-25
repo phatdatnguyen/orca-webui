@@ -4,4 +4,7 @@ include CHANGELOG.md
 include requirements-dev.txt
 include pytest.ini
 recursive-include src/orca_webui *.css
+recursive-include src/orca_webui/frontend *.js
+recursive-include src/orca_webui/assets/ketcher *
+include scripts/vendor_molecular_editor.py
 recursive-include tests *.py

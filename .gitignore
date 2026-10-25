@@ -24,3 +24,7 @@ dist/
 *.mol2
 *.html
 *.cube
+
+# Bundled editor resources are source assets, not generated calculation files.
+!src/orca_webui/assets/ketcher/
+!src/orca_webui/assets/ketcher/**

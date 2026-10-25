@@ -1,6 +1,31 @@
 # Changelog
 
-## 0.1.11 — Unreleased
+## 0.1.12 — Unreleased
+
+### Changed
+
+- Upgrade Gradio from 5.50.0 to 6.30.0 and migrate the app's UI configuration to the
+  Gradio 6 APIs.
+- Replace the third-party molecular editor with an app-owned Gradio HTML component
+  using Ketcher 3.18.0 standalone. Package the editor assets for local, offline use.
+- Add explicit **Use drawing** and **Load SMILES into editor** controls, with RDKit
+  validation before molecule text is accepted. Direct SMILES entry remains available.
+- Serve permanent editor assets separately from transient structure viewers and
+  retain the upstream license and dependency notices in release packages.
+
+### Removed
+
+- Remove the old molecular editor dependency and its optional-installation workflow.
+- Integrate the supplied editor reference files into the package and remove the
+  temporary `new_molecular_editor/` reference directory.
+
+### Release preparation
+
+- Align package metadata and the runtime version at 0.1.12, update contributor and
+  user documentation, and prepare wheel and source distributions for validation.
+  Publication is a separate maintainer step.
+
+## 0.1.11
 
 ### Added
 

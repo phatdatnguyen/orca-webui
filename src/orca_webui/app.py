@@ -22,6 +22,7 @@ from .working_directory import working_directory_blocks
 from .conformer_generation import conformer_generation_tab_content
 from .calculation import calculation_tab_content
 from .result import result_tab_content
+from .molecular_editor import mount_molecular_editor
 
 # styles.css is packaged data, resolved relative to this module (read-only).
 _STYLES_PATH = Path(__file__).parent / "styles.css"
@@ -80,8 +81,11 @@ def build_app(run_dir: Path | None = None) -> FastAPI:
 
     # mount FastAPI StaticFiles server
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
+    # Bundled editor assets are permanent package data, separate from the transient
+    # viewer directory, and must be mounted before Gradio's catch-all root route.
+    mount_molecular_editor(app)
 
-    with gr.Blocks(css_paths=_STYLES_PATH) as blocks:
+    with gr.Blocks() as blocks:
         with gr.Row():
             working_directory_path_state, working_directory_file_list_state = working_directory_blocks(
                 base_path=run_dir / "data", static_dir=static_dir)
@@ -95,7 +99,7 @@ def build_app(run_dir: Path | None = None) -> FastAPI:
                         result_tab_content(working_directory_path_state, working_directory_file_list_state, status_markdown)
 
     # mount Gradio app to FastAPI app
-    return gr.mount_gradio_app(app, blocks, path="/")
+    return gr.mount_gradio_app(app, blocks, path="/", css_paths=_STYLES_PATH)
 
 
 def main() -> None:

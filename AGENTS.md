@@ -10,7 +10,7 @@ ORCA itself is an external binary launched with `subprocess.Popen` using an abso
 
 ## Packaging & layout
 
-The project is a pip-installable package (`orca-webui` on PyPI, import name `orca_webui`) using a **src layout**: all modules live under `src/orca_webui/`. Metadata is in `pyproject.toml` (setuptools backend); `styles.css` ships as package data. The `orca-webui` console command maps to `orca_webui.app:main`.
+The project is a pip-installable package (`orca-webui` on PyPI, import name `orca_webui`) using a **src layout**: all modules live under `src/orca_webui/`. Metadata is in `pyproject.toml` (setuptools backend). Package data includes `styles.css`, `frontend/molecular_editor.js`, and the complete pinned Ketcher standalone tree under `assets/ketcher/`, including license and dependency notices. The `orca-webui` console command maps to `orca_webui.app:main`.
 
 ## Commands
 
@@ -28,22 +28,22 @@ pytest                                                        # whole suite
 pytest tests/test_nmr_analysis.py                            # one file
 pytest tests/test_nmr_analysis.py::test_peak_table_averages_equivalent_and_assigns_multiplicity  # one test
 
-# Build & validate the prepared 0.1.11 distributions
+# Build & validate the prepared 0.1.12 distributions
 python -m build
-python -m twine check dist/orca_webui-0.1.11-py3-none-any.whl dist/orca_webui-0.1.11.tar.gz
+python -m twine check dist/orca_webui-0.1.12-py3-none-any.whl dist/orca_webui-0.1.12.tar.gz
 ```
 
-`orca_webui.app.main()` auto-selects the first free port starting at 7860 and serves on `127.0.0.1`. Notable pins in `pyproject.toml`: `gradio==5.50.0` and `nglview==4.0` (the app targets those exact versions); `cclib>=1.8` from PyPI (the old README installed cclib from git — PyPI packages cannot declare git dependencies, so a released cclib is required).
+`orca_webui.app.main()` auto-selects the first free port starting at 7860 and serves on `127.0.0.1`. Notable pins in `pyproject.toml`: `gradio==6.30.0` and `nglview==4.0` (the app targets those exact versions); `cclib>=1.8` from PyPI (the old README installed cclib from git — PyPI packages cannot declare git dependencies, so a released cclib is required).
 
-The `orca-env/` venv lives inside the repo and is gitignored, as are build artifacts (`dist/`, `build/`, `*.egg-info/`). Keep `pyproject.toml` and `src/orca_webui/__init__.py` version values aligned. The next release is 0.1.11; changes are recorded in `CHANGELOG.md`. See `Readme.md` for release preparation and publication steps. Building and checking distributions does not publish them.
+The `orca-env/` venv lives inside the repo and is gitignored, as are build artifacts (`dist/`, `build/`, `*.egg-info/`). Keep `pyproject.toml` and `src/orca_webui/__init__.py` version values aligned. The next release is 0.1.12; changes are recorded in `CHANGELOG.md`. See `Readme.md` for release preparation and publication steps. Building and checking distributions does not publish them.
 
 ### Tests
 
-`tests/` covers ORCA input generation, molecule I/O, spectra, the NMR pipeline, process execution, file handling, and UI regressions. Most tests use synthetic logs and stand-in processes; none depend on gitignored `data/` outputs. `tests/test_orca_integration.py` also runs real single-point, optimization, TDDFT/ECD, and NMR calculations. These tests carry the `orca` marker and skip when ORCA is unavailable; set `ORCA_EXECUTABLE` to its full path or use `pytest -m "not orca"` to exclude them. Tests needing the UI stack or cclib use `pytest.importorskip`. `cclib` is imported lazily in `utils.mol_from_orca_file`, so most engine tests work without it.
+`tests/` covers ORCA input generation, molecule I/O, spectra, the NMR pipeline, process execution, file handling, the molecular editor, and UI regressions. Most tests use synthetic logs and stand-in processes; none depend on gitignored `data/` outputs. `tests/test_orca_integration.py` also runs real single-point, optimization, TDDFT/ECD, and NMR calculations. These tests carry the `orca` marker and skip when ORCA is unavailable; set `ORCA_EXECUTABLE` to its full path or use `pytest -m "not orca"` to exclude them. Tests needing the UI stack or cclib use `pytest.importorskip`. `cclib` is imported lazily in `utils.mol_from_orca_file`, so most engine tests work without it.
 
 ## Architecture
 
-The app is a FastAPI host with a Gradio Blocks UI mounted at `/` and a `StaticFiles` mount at `/static`, assembled in `app.py`'s `build_app()` (entry point `main()`). `static/` holds transient HTML/cube/xyz artifacts (e.g. nglview structure viewers embedded via `<iframe>`). `_cleanup_transient_files` removes only these artifacts on startup and preserves calculation logs; cleanup must not follow symlinks outside `static/`. Both `data/` (user working directories) and `static/` are created **relative to the current working directory**, or under the explicit `build_app(run_dir=...)` directory, not the install location — so an installed package never writes into `site-packages`. Viewers use unique HTML filenames. `styles.css` is the exception: it's package data, read from beside the module.
+The app is a FastAPI host with a Gradio Blocks UI mounted at `/` and a `StaticFiles` mount at `/static`, assembled in `app.py`'s `build_app()` (entry point `main()`). `static/` holds transient HTML/cube/xyz artifacts (e.g. nglview structure viewers embedded via `<iframe>`). `_cleanup_transient_files` removes only these artifacts on startup and preserves calculation logs; cleanup must not follow symlinks outside `static/`. Both `data/` (user working directories) and `static/` are created **relative to the current working directory**, or under the explicit `build_app(run_dir=...)` directory, not the install location — so an installed package never writes into `site-packages`. Viewers use unique HTML filenames. Styles and molecular-editor assets are read-only package data. `mount_molecular_editor` mounts the permanent `/molecule-editor` route before Gradio is mounted at `/`; these assets must never be cleaned with runtime `static/` files. Gradio 6 presentation options such as `css_paths` belong on `gr.mount_gradio_app`, not the `gr.Blocks` constructor.
 
 ### Working-directory model
 
@@ -57,9 +57,15 @@ State flows through Gradio `gr.State` objects created in `working_directory_bloc
 
 ### UI structure (three tabs, one file each)
 
-- `conformer_generation.py` — draw a molecule (optional `gradio_molecule2d`) or type SMILES → RDKit embeds and optimizes conformers → writes `.xyz`/`.pdb`/`.mol` files. Without the editor dependency, the tab uses SMILES entry. Settings and output collisions are checked before embedding; unsuccessful optimizations are excluded.
+- `conformer_generation.py` — draw a molecule with the built-in Ketcher editor or type SMILES → RDKit embeds and optimizes conformers → writes `.xyz`/`.pdb`/`.mol` files. **Use drawing** copies the validated drawing into the SMILES field; **Load SMILES into editor** loads the field into the sketcher. Generate always uses the current SMILES field. Settings and output collisions are checked before embedding; unsuccessful optimizations are excluded.
 - `calculation.py` — pick a structure file + calculation type + method/basis/solvation → generate an ORCA `.inp` file → optionally launch ORCA, capturing stdout/stderr to a `.log`. A process lock permits only one active calculation per app instance; Stop terminates the process tree. Existing logs rotate to `.log.bak` (replacing older backups), and launch failure restores the previous log. Validate paths and the executable before rotating files. The calculation-type radio drives control visibility via `on_change_calculation_type` / `on_method_type_change`.
 - `result.py` — loads a `.log` via cclib, then reveals available Energy, Geometry Optimization, Frequency, Absorption/Emission/ECD, and NMR results. Convert cclib SCF and MO energies from eV to hartree; include both spin channels for unrestricted results. Optional fields may be absent in partial logs. `on_load_result_file` and `_empty_result_outputs` must stay index-aligned with `nmr_result_outputs`; update all three when changing outputs. Directory changes and load errors clear cached data and disable exports.
+
+### Molecular editor
+
+`molecular_editor.py` builds the Gradio `HTML` component and validates SMILES transfers with RDKit. Its JavaScript lives in `frontend/molecular_editor.js`; the canvas is an iframe scoped to that component. Keep the HTML template independent of molecule text so updates do not recreate the iframe or reset drawing history. The component value carries `smiles` and a unique `load_id` for explicit loads; drawing export triggers its `.input` callback.
+
+Ketcher 3.18.0 standalone is bundled under `src/orca_webui/assets/ketcher/`, so app startup performs no downloads and needs no Node build or separate chemistry service. `scripts/vendor_molecular_editor.py` is the maintainer helper for restoring missing assets: it verifies pinned download checksums, stages installation, and validates an existing installation without overwriting it. Preserve upstream notices and include the frontend bridge and full asset tree in both wheel and source distributions. There is no dependency on the previous third-party Gradio component or the temporary reference directory.
 
 ### `utils.py` — the shared engine
 
@@ -85,4 +91,4 @@ NMR reference shieldings (TMS defaults: H=32.9, C=203.4 ppm) are user-editable t
 - **Handler signature:** every UI callback is a top-level `on_*` function taking Gradio component values positionally and returning values positionally into the outputs list wired in the tab's `*_tab_content` / `*_blocks` builder. Keep the wiring (`.click`/`.change`/`.select` calls at the bottom of each builder) index-aligned with handler returns.
 - **Errors surface to the user:** handlers catch failures and return an escaped red status span plus refreshed outputs, or show `gr.Warning` for file operations. Preserve return arity and avoid secondary errors while refreshing a missing directory.
 - **File safety:** use `resolve_working_file` for user-selected files and editable output names. Reject paths and symlinks escaping the working directory. Uploads and conformer generation must reject output collisions. Text saves use an atomic replacement and the path of the file loaded into the editor, not the currently selected browser row. Clear file selections, viewers, editor contents, and cached results when the working directory changes.
-- Generated artifacts (`.inp`, `.log`, `.csv`, `.xyz`, `.html`, `.cube`, etc.) and `data/`, `static/`, `orca-env/` are all gitignored — never commit them.
+- Generated calculation/viewer artifacts (`.inp`, `.log`, `.csv`, `.xyz`, `.html`, `.cube`, etc.) and `data/`, `static/`, `orca-env/` are gitignored — never commit them. The vendored editor HTML/JavaScript/assets under `src/orca_webui/assets/ketcher/` are permanent package sources and must be retained in the repository and distributions.

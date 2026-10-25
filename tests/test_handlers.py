@@ -50,7 +50,6 @@ def test_file_list_sorted_by_mtime_newest_first(tmp_path):
 
 def test_generate_conformers_invalid_smiles_returns_error(tmp_path):
     pytest.importorskip("gradio")
-    pytest.importorskip("gradio_molecule2d")
     from orca_webui import conformer_generation
 
     status, _files, _table = conformer_generation.on_generate_conformers(
@@ -63,7 +62,6 @@ def test_generate_conformers_invalid_smiles_returns_error(tmp_path):
 
 def test_generate_conformers_writes_expected_files(tmp_path):
     pytest.importorskip("gradio")
-    pytest.importorskip("gradio_molecule2d")
     from orca_webui import conformer_generation
 
     status, _files, table = conformer_generation.on_generate_conformers(
@@ -370,3 +368,29 @@ def test_run_calculation_reports_nonzero_exit(tmp_path):
 
     assert "color:red" in status
     assert "exited with code 1" in status
+
+
+def test_run_chain_preserves_status_while_calculation_blocks():
+    """Gradio must publish the running label before scheduling the blocking job."""
+    pytest.importorskip("gradio")
+    from orca_webui import calculation
+
+    with calculation.gr.Blocks() as blocks:
+        directory = calculation.gr.State()
+        files = calculation.gr.State()
+        status = calculation.gr.Markdown()
+        calculation.calculation_tab_content(directory, files, status)
+
+    events = {event.fn: event for event in blocks.fns.values()}
+    started = events[calculation.on_calculation_started]
+    running = events[calculation.on_run_calculation]
+    finished = events[calculation.on_calculation_finished]
+    assert started.queue is False
+    assert started.outputs[1] is status
+    assert running.outputs == [status, files]
+    assert running.show_progress == "hidden"
+    assert finished.outputs == [started.outputs[0]]
+    button_update, status_text = started.fn()
+    assert button_update["interactive"] is False
+    assert "Running calculation..." in status_text
+    assert finished.fn()["interactive"] is True

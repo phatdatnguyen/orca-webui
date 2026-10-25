@@ -5,10 +5,7 @@ import pandas as pd
 from rdkit import Chem
 from rdkit.Chem import AllChem, rdMolAlign
 import gradio as gr
-try:
-    from gradio_molecule2d import molecule2d
-except ImportError:
-    molecule2d = None
+from .molecular_editor import molecular_editor, load_smiles_into_editor, smiles_from_editor
 from .utils import get_files_in_working_directory, conformer_to_xyz_file, resolve_working_file
 
 # maximum number of embedding rounds before giving up on reaching the requested count
@@ -18,15 +15,6 @@ MAX_BARREN_ROUNDS = 2
 # how many candidates to embed per round, relative to the number still missing
 OVERSAMPLING_FACTOR = 4
 MAX_BATCH_SIZE = 250
-
-def on_draw_molecule(molecule_editor):
-    if not isinstance(molecule_editor, str) or not molecule_editor.strip():
-        return ""
-    mol = Chem.MolFromSmiles(molecule_editor)
-    if mol is None:
-        return ""
-
-    return Chem.MolToSmiles(mol, canonical=True)
 
 def optimize_conformers(mol):
     # Optimize every conformer with MMFF94 (UFF as fallback) and return the energies in kcal/mol.
@@ -175,12 +163,11 @@ def conformer_generation_tab_content(working_directory_path_state, working_direc
         with gr.Row():
             with gr.Column(scale=2):
                 with gr.Accordion("Molecular Structure"):
-                    molecule_editor = molecule2d(label="Molecule") if molecule2d is not None else None
-                    if molecule_editor is None:
-                        gr.Markdown("Enter the molecular structure as SMILES to generate conformers.")
+                    molecule_editor = molecular_editor()
             with gr.Column(scale=1):
                 with gr.Accordion("Generate Conformers"):
                     input_smiles_texbox = gr.Textbox(label="SMILES")
+                    load_smiles_button = gr.Button("Load SMILES into editor")
                     charge_slider = gr.Slider(label="Charge", value=0, minimum=-2, maximum=2, step=1)
                     multiplicity_dropdown = gr.Dropdown(label="Multiplicity", value=1, choices=[("Singlet", 1), ("Doublet", 2), ("Triplet", 3), ("Quartet", 4), ("Quintet", 5), ("Sextet", 6)])
                     num_confs_slider = gr.Slider(label="Number of conformers", value=1, minimum=1, maximum=100, step=1)
@@ -192,8 +179,8 @@ def conformer_generation_tab_content(working_directory_path_state, working_direc
                     status_markdown = gr.Markdown()
                     conformer_dataframe = gr.Dataframe(label="Generated conformers", headers=["ID", "Energy (kcal/mol)"], datatype=["number", "number"], max_height=360, interactive=False)
 
-    if molecule_editor is not None:
-        molecule_editor.change(on_draw_molecule, molecule_editor, input_smiles_texbox)
+    molecule_editor.input(smiles_from_editor, molecule_editor, input_smiles_texbox)
+    load_smiles_button.click(load_smiles_into_editor, input_smiles_texbox, molecule_editor)
     generate_button.click(on_generate_conformers, [working_directory_path_state, input_smiles_texbox, charge_slider, multiplicity_dropdown, num_confs_slider, energy_threshold_slider, rms_threshold_slider, file_name_textbox, file_type_dropdown], [status_markdown, working_directory_file_list_state, conformer_dataframe])
 
     return conformer_generation_tab

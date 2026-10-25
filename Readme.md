@@ -60,19 +60,21 @@ pip install orca-webui
 
 This pulls in all Python dependencies (Gradio, RDKit, cclib, plotly, nglview, ...).
 
-### Optional: 2D structure editor
+### Built-in molecular editor
 
-The conformer tab can show a 2D drawing editor powered by `gradio_molecule2d`. That
-package pins `gradio<5.0`, which conflicts with the `gradio 5.x` this app uses, so it
-is **not** installed automatically. To enable the editor, install it without its
-dependencies:
+The Conformer generation tab includes a molecular drawing editor based on Ketcher
+3.18.0 and the app's own Gradio HTML integration. Its browser assets ship with the
+package and are served locally, so drawing needs no CDN, Node installation, or
+separate chemistry server. This release targets Gradio 6.30.0.
 
-```
-pip install gradio_molecule2d --no-deps
-```
+- Draw a molecule, then click **Use drawing** to send it to the **SMILES** field.
+- To edit a SMILES string visually, enter it in the field and click **Load SMILES
+  into editor**. Loading an empty field clears the drawing.
+- Click **Generate** to create conformers from the current **SMILES** field. After
+  changing the drawing, click **Use drawing** again before generating.
 
-Without it, the app runs fine — you simply enter a SMILES string directly instead of
-drawing.
+The app validates molecule text with RDKit before accepting it. You can also enter
+SMILES and generate conformers directly without using the drawing editor.
 
 ### Newer ORCA versions (6.1+) and cclib
 
@@ -143,7 +145,7 @@ orbitals for unrestricted calculations. Available energy and frequency data can 
 displayed even when optional fields are missing. NMR multiplets use Pascal weights
 directly to keep large equivalent partner groups responsive.
 
-See [CHANGELOG.md](./CHANGELOG.md) for the changes prepared for version 0.1.11.
+See [CHANGELOG.md](./CHANGELOG.md) for the changes prepared for version 0.1.12.
 
 ### Optimization and spectra are separate steps
 
@@ -214,7 +216,6 @@ source orca-env/bin/activate          # Windows: orca-env\Scripts\activate.bat
 
 # install in editable mode with the dev extras (pytest, build, twine)
 pip install -e ".[dev]"
-pip install gradio_molecule2d --no-deps   # optional 2D editor, see above
 
 # run the app and the tests
 orca-webui
@@ -224,8 +225,8 @@ pytest
 ### Tests
 
 Most of the suite uses synthetic ORCA logs and stand-in processes, covering input
-generation, parsing, spectra, execution, file handling, and UI regressions. It does
-not require files from `data/`.
+generation, parsing, spectra, execution, file handling, the molecular editor, and UI
+regressions. It does not require files from `data/`.
 
 `tests/test_orca_integration.py` additionally drives the **real** ORCA binary — it
 generates an input with the app's writers, runs it, and parses the output with the app's
@@ -243,6 +244,25 @@ The integration tests include water single points, methane NMR, and hydrogen per
 ground/excited-state optimizations and TD-DFT/ECD calculations. They use `nprocs 1`,
 so they need no MPI. Runtime depends on the installed ORCA version and hardware;
 parsing also requires a compatible cclib version.
+
+### Maintaining the editor assets
+
+The editor integration lives in `src/orca_webui/molecular_editor.py` and
+`src/orca_webui/frontend/molecular_editor.js`. The pinned Ketcher standalone files,
+including their license and dependency notices, live in
+`src/orca_webui/assets/ketcher/` and are included in both distributions. These are
+permanent package assets, separate from generated viewers in the runtime `static/`
+directory.
+
+Maintainers can restore a missing asset directory with:
+
+```bash
+python scripts/vendor_molecular_editor.py
+```
+
+The helper verifies the pinned download checksums and installs into a staging
+directory first. It checks an existing installation instead of overwriting it.
+Normal package installation and app startup do not download editor files.
 
 ### Editable installs
 
@@ -302,36 +322,3 @@ python -m venv orca-env
 source orca-env/bin/activate
 pip install -e ".[dev]"
 ```
-
-### Preparing version 0.1.11
-
-Version 0.1.11 is prepared in this source tree; these instructions do not imply that
-it has been published. Keep the version in `pyproject.toml` and
-`src/orca_webui/__init__.py` aligned and review [CHANGELOG.md](./CHANGELOG.md).
-
-With the development environment active, validate and build the release:
-
-```bash
-python -m pytest
-python -m build
-python -m twine check dist/orca_webui-0.1.11-py3-none-any.whl dist/orca_webui-0.1.11.tar.gz
-```
-
-Smoke-test the wheel in a separate virtual environment, leaving the source checkout
-editable for development. When ready to publish, upload only the reviewed 0.1.11
-artifacts, so older files in `dist/` are not uploaded accidentally:
-
-```bash
-python -m twine upload dist/orca_webui-0.1.11-py3-none-any.whl dist/orca_webui-0.1.11.tar.gz
-```
-
-After publication, users with a regular PyPI installation can stop the app, upgrade,
-and restart from the same directory to retain their `data/` folders:
-
-```bash
-python -m pip install --upgrade "orca-webui==0.1.11"
-orca-webui
-```
-
-For an editable source installation, use `python -m pip install -e .` after updating
-the checkout, then restart the app.

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "orca-webui"
-version = "0.1.11"
+version = "0.1.12"
 description = "A Gradio web UI for simple ORCA computational-chemistry calculations (single point, ground- and excited-state geometry optimization, frequency/IR, TD-DFT UV-Vis and ECD, and NMR)."
 readme = "Readme.md"
 requires-python = ">=3.10"
@@ -40,7 +40,7 @@ classifiers = [
 dependencies = [
     "fastapi",
     "uvicorn",
-    "gradio==5.50.0",
+    "gradio==6.30.0",
     "nglview==4.0",
     "rdkit",
     # cclib 1.8.x (latest PyPI release) parses ORCA <= 6.0. Output from ORCA 6.1+ needs
@@ -53,12 +53,6 @@ dependencies = [
     "matplotlib",
     "psutil",
 ]
-
-# gradio_molecule2d (the optional 2D drawing editor) is intentionally NOT a hard
-# dependency: its 0.0.3 release pins gradio<5.0, which cannot coexist with the
-# gradio==5.50.0 this app targets. Install it separately to enable the editor:
-#   pip install gradio_molecule2d --no-deps
-# Without it, the conformer tab omits the editor and users enter SMILES directly.
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "build", "twine"]
@@ -75,4 +69,4 @@ orca-webui = "orca_webui.app:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-orca_webui = ["styles.css"]
+orca_webui = ["styles.css", "frontend/*.js", "assets/ketcher/*", "assets/ketcher/**/*"]
